@@ -249,18 +249,6 @@ rotate board pill rot = case orientation pill of
 	kicked   = pill { bottomLeftPosition = unsafeMove left (bottomLeftPosition pill) }
 	kickedAndRotated = Just (unsafeRotate kicked rot)
 
--- | Just like 'V.unsafeUpd', except does a shallow copy when given an empty
--- list of updates.
-vunsafeUpd :: V.Vector a -> [(Int, a)] -> V.Vector a
-vunsafeUpd v [] = v
-vunsafeUpd v xs = V.unsafeUpd v xs
-
--- | Just like 'U.unsafeUpd', except does a shallow copy when given an empty
--- list of updates.
-uunsafeUpd :: U.Unbox a => U.Vector a -> [(Int, a)] -> U.Vector a
-uunsafeUpd v [] = v
-uunsafeUpd v xs = U.unsafeUpd v xs
-
 -- | Overwrite the cells under a 'Pill', then repeatedly clear four-in-a-rows
 -- and drop unsupported pieces. N.B. nothing will drop if nothing clears, so it
 -- is the caller's responsibility to ensure that the pill would be supported
@@ -307,14 +295,14 @@ place board pill = case (placementValid, fastPathValid) of
 	-- checks.
 	fastPath :: Board
 	fastPath = case orientation pill of
-		Horizontal -> board { cells = cells board `vunsafeUpd`
-				[ (x, cells board `V.unsafeIndex` x `uunsafeUpd` [(y1, cell)])
+		Horizontal -> board { cells = cells board `V.unsafeUpd`
+				[ (x, cells board `V.unsafeIndex` x `U.unsafeUpd` [(y1, cell)])
 				| (x, cell) <- [ (x1, Occupied (bottomLeftColor pill) West)
 				               , (x2, Occupied (     otherColor pill) East)
 				               ]
 				]
 			}
-		Vertical -> board { cells = cells board `vunsafeUpd` [(x1, cells board `V.unsafeIndex` x1 `uunsafeUpd`
+		Vertical -> board { cells = cells board `V.unsafeUpd` [(x1, cells board `V.unsafeIndex` x1 `U.unsafeUpd`
 				(  [(y1, Occupied (bottomLeftColor pill) (if y2Valid then South else Disconnected))]
 				++ [(y2, Occupied (     otherColor pill) North) | y2Valid]
 				)
