@@ -276,9 +276,9 @@ place board pill = case (placementValid, fastPathValid) of
 		&& (y2 >= height board || unsafeGet board pos2 == Empty)
 
 	-- We don't need to check y2 >= 0 because:
-	-- * y2 >= y1
 	-- * we only use y2Valid if case placementValid is True
 	-- * if placementValid is True, then y1 >= 0
+	-- * y2 >= y1
 	y2Valid :: Bool
 	y2Valid = y2 < height board
 
@@ -291,8 +291,9 @@ place board pill = case (placementValid, fastPathValid) of
 		]
 
 	-- If we don't need to clear or drop anything, what would the board look
-	-- like? We assume here that placementValid is True to elide some bounds
-	-- checks.
+	-- like?
+	--
+	-- We assume here that placementValid is True to elide some bounds checks.
 	fastPath :: Board
 	fastPath = case orientation pill of
 		Horizontal -> board { cells = cells board `V.unsafeUpd`
@@ -369,7 +370,7 @@ memptyBoard w h = MBoard w h <$> M.new (w*h)
 
 thaw :: Board -> ST s (MBoard s)
 thaw board = do
-	-- the unsafeThaw should be safe because M.concat makes a new vector not
+	-- the unsafeThaw should be safe because U.concat makes a new vector not
 	-- used elsewhere
 	cs <- U.unsafeThaw . U.concat . V.toList . cells $ board
 	return MBoard
@@ -409,6 +410,13 @@ mget mb p
 munsafeSet :: MBoard s -> Position -> Cell -> ST s ()
 munsafeSet mb p c = M.unsafeWrite (mcells mb) (x p * mheight mb + y p) c
 
+-- | Out-of-bounds writes are silently discarded. Doesn't promise anything
+-- about clears or gravity.
+mset :: MBoard s -> Position -> Cell -> ST s ()
+mset mb p cell
+	| x p >= 0 && x p < mwidth mb && y p >= 0 && y p < mheight mb = munsafeSet mb p cell
+	| otherwise = return ()
+
 -- | Modify the cell at a given position, and return the old value.
 --
 -- Doesn't do bounds checking or promise anything about clears or gravity.
@@ -421,11 +429,11 @@ munsafeModify mb p f = do
 	v = mcells mb
 	i = x p * mheight mb + y p
 
--- | Place a virus. Out-of-bounds positions are silently discarded.
+-- | Place a virus. Out-of-bounds positions are silently discarded. Does not
+-- trigger clears of 4-in-a-rows, so it is the caller's responsibility to
+-- ensure this isn't needed.
 minfect :: MBoard s -> Position -> Color -> ST s ()
-minfect mb p col
-	| x p >= 0 && x p < mwidth mb && y p >= 0 && y p < mheight mb = munsafeSet mb p (Occupied col Virus)
-	| otherwise = return ()
+minfect mb p col = mset mb p (Occupied col Virus)
 
 -- | @unsafeClear board positions@ takes a board and a collection of positions
 -- on the board which have recently changed, and modifies the board to take
@@ -532,20 +540,16 @@ mrunLength mb p dir = do
 	cell <- mget mb p
 	case cell of
 		Nothing -> return 0
-		Just c -> runLengthHelper mb dir (color c) (unsafeMove dir p) 0
+		Just c -> mcolorRunLength mb p dir (color c)
 
 -- | How far away is the last valid position of the given color in the given
 -- direction? (Does not check that the given position is of the given color.)
 mcolorRunLength :: MBoard s -> Position -> Direction -> Maybe Color -> ST s Int
-mcolorRunLength mb p dir col = runLengthHelper mb dir col (unsafeMove dir p) 0
-
--- | Internal use only.
-runLengthHelper :: MBoard s -> Direction -> Maybe Color -> Position -> Int -> ST s Int
-runLengthHelper mb dir = go where
-	go col p n = do
+mcolorRunLength mb p dir col = go (unsafeMove dir p) 0 where
+	go p n = do
 		cell <- mget mb p
 		case color <$> cell of
-			Just col' | col' == col -> go col (unsafeMove dir p) $! n+1
+			Just col' | col' == col -> go (unsafeMove dir p) $! n+1
 			_ -> return n
 
 -- | Loop applying gravity and clearing 4-in-a-rows, until no changes are made.
