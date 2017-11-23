@@ -1,0 +1,27 @@
+name:                maryodel
+version:             0.1.0.0
+synopsis:            A pure-Haskell model of Dr. Mario, NES edition
+-- description:         
+license:             BSD3
+license-file:        LICENSE
+author:              Daniel Wagner
+maintainer:          me@dmwit.com
+copyright:           2017, Daniel Wagner
+category:            Game
+build-type:          Simple
+extra-source-files:  ChangeLog.md
+cabal-version:       >=1.10
+
+library
+  exposed-modules:     DrMario
+  other-extensions:    BinaryLiterals,
+                       TypeFamilies,
+                       MultiParamTypeClasses
+  build-depends:       ansi-terminal >=0.7 && <0.8,
+                       base >=4.10 && <4.11,
+                       containers >=0.5 && <0.6,
+                       data-default-class >=0.1 && <0.2,
+                       primitive >=0.6 && <0.7,
+                       vector >=0.12 && <0.13
+  default-language:    Haskell2010
+  ghc-options:         -fno-warn-tabs -funbox-strict-fields
