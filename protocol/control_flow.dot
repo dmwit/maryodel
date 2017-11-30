@@ -1,0 +1,16 @@
+digraph G {
+	start[shape=plaintext,label=""];
+	start -> version_proposal;
+	version_proposal -> version_proposal [label=" propose-version"];
+	version_proposal -> version_selection [label=" request-version"];
+	version_selection -> match_setup [label=" version"];
+	match_setup -> game_setup [label=" players"];
+	game_setup -> game_setup [label=" players,state"];
+	game_setup -> cleanup [label=" state"];
+	control -> cleanup [label=" mode you cleanup"];
+	cleanup -> control [label=" mode you control"];
+	control -> control [label=" loser,state,*-control,*"];
+	cleanup -> cleanup [label=" loser,state,garbage you,*"];
+	control -> game_setup [label=" winner,loser"];
+	cleanup -> game_setup [label=" winner,loser"];
+}
