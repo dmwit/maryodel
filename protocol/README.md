@@ -247,7 +247,7 @@ that it makes sense to participate in this negotiation even when there is no
 version of the protocol that both the server and client can understand. All
 other messages&mdash;and even the structure of messages described
 above&mdash;are subject to radical modification in future versions of the
-protocol. This document describes version `0` of the protocol.
+protocol. This document describes version `0-statefix` of the protocol.
 
 As mentioned in the overview, this document contains many example exchanges
 between a hypothetical server and client. These exchanges are prefaced by
@@ -394,9 +394,10 @@ the game\_setup state.
 
 The server has some state for each player: the status of each switch, queued
 switch manipulations, scheduled switch manipulations (when in control mode),
-and possibly some debug information. When entering the game\_setup state, this
-state is notionally cleared: the switches are reset to open, queued and
-scheduled switch manipulations are silently discarded, and debug information is
+outstanding state requests, and possibly some debug information. When entering
+the game\_setup state, this state is notionally cleared: the switches are reset
+to open, queued and scheduled switch manipulations are silently discarded,
+outstanding state requests are silently dropped, and debug information is
 cleared. When entering the cleanup state, only part of the state is cleared:
 the switches are reset to open, and scheduled switch manipulations are silently
 discarded.
@@ -633,7 +634,8 @@ bottle.
 
 If all but one players has lost, the server discards any scheduled switch
 manipulations, discards any queued switch manipulations, resets all switches to
-open, and discards all debug information.
+open, discards any outstanding state requests, and discards all debug
+information.
 
 #### mode (S)
 
@@ -714,7 +716,8 @@ The player indicated won by clearing all of their viruses.
 
 Because we are now transitioning to game\_setup, the server discards any
 scheduled switch manipulations, discards any queued switch manipulations,
-resets all switches to open, and discards all debug information.
+resets all switches to open, discards any outstanding state requests, and
+discards all debug information.
 
 #### control (C)
 
@@ -787,13 +790,26 @@ a *state reply* is a sequence of `state` messages, one per player who has not
 yet lost, with no intervening messages.
 
 In the first variant, the request is for whatever frame the server happens to
-be on when it processes the request, and MUST result in a state reply.
+be on when it processes the request, and MUST result in either a state reply or
+a transition to the game\_setup state.
 
 In the second variant, the request is for the frame given by the integer
-component. The server MUST either produce a state reply during the given frame
-or reject the request with an appropriate `far-state` or `old-state` message.
+component. The server MUST do one of the following three things:
+
+1. Produce a state reply during the given frame.
+2. Reject the request with an appropriate `far-state` or `old-state` message.
+3. Transition to the game\_setup state before the given frame.
 
 In the third and fourth variants, the request is for the next appropriate mode
-transition. The server MUST produce a state reply during the same frame as the
-next `mode you control` message (for the third variant) or `mode you cleanup`
-message (for the fourth variant).
+transition. The server MUST either produce a state reply during the same frame
+as the next `mode you control` message (for the third variant) or `mode you
+cleanup` message (for the fourth variant) or transition to the game\_setup
+state before the relevant `mode you` message.
+
+## Changes
+
+### `0` to `0-statefix`
+
+Previously, state requests were preserved across game boundaries, which was not
+really sensible. The `0-statefix` protocol fixes this oversight and allows
+servers to discard state requests when entering the game\_setup state.
