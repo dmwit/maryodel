@@ -1,5 +1,7 @@
 local u = require('unix')
 
+local PROTOCOL_VERSION = '0-statefix'
+
 local function die(s)
 	io.stderr:write(s)
 	io.stderr:write('\n')
@@ -75,15 +77,17 @@ local function i()
 end
 
 print('Negotiating version...')
-o('propose-version 0')
+o('propose-version ' .. PROTOCOL_VERSION)
 o('request-version')
 local reply = i()
+-- Polling isn't the greatest. Perhaps we can temporarily turn the pipe into a
+-- blocking one again or something?
 while nil == reply do reply = i() end
-if 'version 0' ~= reply then
+if 'version ' .. PROTOCOL_VERSION ~= reply then
 	print('WARNING: The client is non-conforming. The protocol requires that it reply with')
-	print('         "version 0" at this point, but it replied with the following instead:')
+	print('         "version ' .. PROTOCOL_VERSION .. '" at this point, but instead it said:')
 	print('         ' .. reply)
 	print("         (I'll do my best to continue anyway, but expect some oddities.)")
 else
-	print('Negotiated version 0.')
+	print('Negotiated version ' .. PROTOCOL_VERSION .. '.')
 end
