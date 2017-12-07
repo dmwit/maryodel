@@ -76,6 +76,90 @@ local function i()
 	return v
 end
 
+local LMODE = { cleanup = 0, control = 1, lost = 2 }
+local ADDR = { mode = 0x46, players = 0x727 }
+local MODE = { prep = 8, game = 4 }
+local PLAYER_1_ADDRS = { pill_sequence_counter = 0x0327, pill_drop_counter = 0x0312 }
+local PLAYER_2_ADDRS = { pill_sequence_counter = 0x03A7, pill_drop_counter = 0x0392 }
+
+local Player = {}
+
+function Player.new(addrs, id)
+	return { addrs = addrs, id = id
+	       , logical_mode = LMODE.cleanup
+	       , old_mode = memory.readbyte(ADDR.mode)
+	       , old_sequence = memory.readbyte(addrs.pill_sequence_counter)
+	       , old_drop = memory.readbyte(addrs.pill_drop_counter)
+	       , update_logical_mode = Player.update_logical_mode
+	       , send_state = Player.send_state
+	       }
+end
+
+-- TODO: When you hold down, this appears to sometimes stay in the control
+-- state for only one or two frames. That doesn't seem right. What's going on?
+function Player.update_logical_mode(self)
+	local sequence = memory.readbyte(self.addrs.pill_sequence_counter)
+	local drop = memory.readbyte(self.addrs.pill_drop_counter)
+	if self.logical_mode == LMODE.cleanup then
+		local mode = memory.readbyte(ADDR.mode)
+		if self.old_sequence ~= sequence then
+			self.logical_mode = LMODE.control
+			drop = 256 -- make sure we don't transition back to cleanup mode next frame
+			-- TODO: which pill are they getting?
+			o('mode ' .. self.id .. ' control')
+		end
+		self.old_mode = mode
+	elseif self.logical_mode == LMODE.control then
+		if self.old_drop == drop then
+			self.logical_mode = LMODE.cleanup
+			o('mode ' .. self.id .. ' cleanup')
+		end
+	end
+	self.old_sequence = sequence
+	self.old_drop = drop
+end
+
+function Player.send_state(self)
+	-- TODO
+	o('state ' .. self.id)
+end
+
+local old_mode = 0
+local player_count = 0
+local players = {}
+
+local function send_messages(before)
+	local mode = memory.readbyte(ADDR.mode)
+	if mode ~= old_mode then
+		old_mode = mode
+		if     mode == MODE.prep then
+			player_count = memory.readbyte(ADDR.players)
+			o('players ' .. player_count)
+			if player_count == 1 then
+				players = { Player.new(PLAYER_1_ADDRS, 'you') }
+			elseif player_count == 2 then
+				players = { Player.new(PLAYER_1_ADDRS, 'opponent')
+				          , Player.new(PLAYER_2_ADDRS, 'you')
+				          }
+			else
+				print('Wow! Player count is not 1 or 2, but ' .. player_count .. '. Everything will probably break shortly.')
+			end
+			for _, player in ipairs(players) do
+				player:send_state()
+			end
+		end
+	end
+
+	if before and (mode == MODE.game or mode == MODE.prep) then
+		for _, player in ipairs(players) do
+			player:update_logical_mode()
+		end
+	end
+end
+
+local function send_messages_before() send_messages(true ) end
+local function send_messages_after()  send_messages(false) end
+
 print('Negotiating version...')
 o('propose-version ' .. PROTOCOL_VERSION)
 o('request-version')
@@ -91,3 +175,6 @@ if 'version ' .. PROTOCOL_VERSION ~= reply then
 else
 	print('Negotiated version ' .. PROTOCOL_VERSION .. '.')
 end
+
+emu.registerbefore(send_messages_before)
+emu.registerafter(send_messages_after)
