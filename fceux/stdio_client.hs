@@ -23,7 +23,6 @@ guessPipes = do
 
 awaitPipes dir = do
 	fps <- listDirectory dir
-	print (dir, fps)
 	case fps of
 		[] -> loop
 		["s2c"] -> loop
@@ -39,7 +38,6 @@ setVersion hs2c hc2s = findVersion where
 
 	findVersion = do
 		message <- BS.hGetLine hs2c
-		print message
 		when (message == requestVersion)
 		     (die "Didn't see any versions we know. Forget it.")
 		let version = BS.drop (length "propose-version ") message
