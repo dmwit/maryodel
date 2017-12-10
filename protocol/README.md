@@ -667,6 +667,8 @@ it requested the state for a frame in the past.
 
     pill <player identifier> <position> <pill>
 
+Landing state: unchanged
+
 The free-floating piece for the indicated player has moved, rotated, or has
 just appeared because control mode started, and is now in the given position
 and orientation.
@@ -674,6 +676,8 @@ and orientation.
 #### speed (S)
 
     speed <player identifier> <integer>
+
+Landing state: unchanged
 
 The drop speed for the indicated player has changed. The given integer
 indicates how many frames may pass without downward movement before a
