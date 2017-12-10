@@ -8,6 +8,15 @@ local function die(s)
 	os.exit()
 end
 
+-- fceux's print doesn't work right. It screws up numbers (often printing weird
+-- floating-point numbers when given integers), doesn't accept multiple
+-- arguments, and prints an extra newline. As long as we already can't handle
+-- multiple arguments, we might as well fix the other two problems.
+local function print(s)
+	if s == nil then io.stdout:write('nil') else io.stdout:write(s) end
+	io.stdout:write('\n')
+end
+
 local s2c_path = io.read("*line")
 local c2s_path = io.read("*line")
 
