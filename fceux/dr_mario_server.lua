@@ -90,13 +90,12 @@ function Player.new(addrs, id)
 	       , old_mode = memory.readbyte(ADDR.mode)
 	       , old_sequence = memory.readbyte(addrs.pill_sequence_counter)
 	       , old_drop = memory.readbyte(addrs.pill_drop_counter)
+	       , seen_nonzero_drop = false
 	       , update_logical_mode = Player.update_logical_mode
 	       , send_state = Player.send_state
 	       }
 end
 
--- TODO: When you hold down, this appears to sometimes stay in the control
--- state for only one or two frames. That doesn't seem right. What's going on?
 function Player.update_logical_mode(self)
 	local sequence = memory.readbyte(self.addrs.pill_sequence_counter)
 	local drop = memory.readbyte(self.addrs.pill_drop_counter)
@@ -104,13 +103,14 @@ function Player.update_logical_mode(self)
 		local mode = memory.readbyte(ADDR.mode)
 		if self.old_sequence ~= sequence then
 			self.logical_mode = LMODE.control
-			drop = 256 -- make sure we don't transition back to cleanup mode next frame
+			self.seen_nonzero_drop = false
 			-- TODO: which pill are they getting?
 			o('mode ' .. self.id .. ' control')
 		end
 		self.old_mode = mode
 	elseif self.logical_mode == LMODE.control then
-		if self.old_drop == drop then
+		self.seen_nonzero_drop = self.seen_nonzero_drop or (drop ~= 0)
+		if self.seen_nonzero_drop and self.old_drop == drop then
 			self.logical_mode = LMODE.cleanup
 			o('mode ' .. self.id .. ' cleanup')
 		end
