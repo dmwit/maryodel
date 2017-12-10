@@ -89,6 +89,7 @@ local PLAYER_MODE =
 	{ cleanup = 0
 	, control = 1
 	, lost = 2
+	, virus_placement = 3
 	}
 
 local ADDR =
@@ -99,26 +100,61 @@ local ADDR =
 	}
 
 local BOARD_MODE = { prep = 8, game = 4 }
+local BOARD_WIDTH  = 8
+local BOARD_HEIGHT = 16
+local BOARD_SIZE   = BOARD_WIDTH * BOARD_HEIGHT
 
 local PLAYER_1_ADDRS =
 	{ pill_sequence_counter = 0x0327
 	, pill_drop_counter = 0x0312
 	, fine_speed = 0x030a
 	, coarse_speed = 0x030b
+	, board = 0x400
+	, virus_count = 0x324
+	, level = 0x734
 	}
 
 local PLAYER_2_ADDRS =
-	{ pill_sequence_counter = 0x03A7
+	{ pill_sequence_counter = 0x03a7
 	, pill_drop_counter = 0x0392
 	, fine_speed = 0x038a
 	, coarse_speed = 0x038b
+	, board = 0x500
+	, virus_count = 0x3a4
+	, level = 0x735
 	}
+
+local CELL_BASE_OFFSET = 0x60
+local CELL_BOTTOM_NIBBLE_MAP =
+	{ [0] = 2
+	, [1] = 1
+	, [2] = 3
+	}
+local CELL_TOP_NIBBLE_MAP =
+	{ [0x4] = 12
+	, [0x5] =  8
+	, [0x6] = 16
+	, [0x7] = 20
+	, [0x8] =  4
+	, [0xd] =  0
+	}
+
+local function bcd_decode(byte)
+	local bot_nibble = byte % 16
+	local top_nibble = (byte - bot_nibble) / 16
+	return top_nibble*10 + bot_nibble
+end
+
+local function max_virus_count(level)
+	if level <= 20 then level = level+1 end
+	return level*4
+end
 
 local Player = {}
 
 function Player.new(addrs, id)
 	return { addrs = addrs, id = id
-	       , mode = PLAYER_MODE.cleanup
+	       , mode = PLAYER_MODE.virus_placement
 	       , coarse = memory.readbyte(addrs.coarse_speed)
 	       , old_sequence = memory.readbyte(addrs.pill_sequence_counter)
 	       , old_drop = memory.readbyte(addrs.pill_drop_counter)
@@ -147,6 +183,13 @@ function Player.update(self)
 			self.mode = PLAYER_MODE.cleanup
 			o('mode ' .. self.id .. ' cleanup')
 		end
+	elseif self.mode == PLAYER_MODE.virus_placement then
+		local viruses = bcd_decode(memory.readbyte(self.addrs.virus_count))
+		local max_viruses = max_virus_count(memory.readbyte(self.addrs.level))
+		if viruses >= max_viruses then
+			self.mode = PLAYER_MODE.cleanup
+			self:send_state()
+		end
 	end
 
 	if self.old_fine ~= fine then
@@ -164,9 +207,39 @@ function Player.compute_speed(fine, coarse)
 	return memory.readbyte(ADDR.frames_per_row_table + speed_ix) + 1
 end
 
+local function cell_memory_to_protocol(char)
+	local byte = char:byte()
+	local memory_bot_nibble = byte % 16
+	local memory_top_nibble = (byte - memory_bot_nibble) / 16
+	local protocol_color = CELL_BOTTOM_NIBBLE_MAP[memory_bot_nibble]
+	local protocol_shape =    CELL_TOP_NIBBLE_MAP[memory_top_nibble]
+	if protocol_shape then
+		return string.char(CELL_BASE_OFFSET + protocol_color + protocol_shape)
+	else
+		return 'd'
+	end
+end
+
+-- Where possible, we re-query emulator memory instead of using any state we've
+-- stored in Lua variables. Since the state message is intended to
+-- re-synchronize the state of the game with a potentially buggy client, we
+-- want to be as sure as possible that we're sending it the current state of
+-- the world and not what the potentially buggy server implementation thinks
+-- the state of the world is.
 function Player.send_state(self)
-	-- TODO
-	o('state ' .. self.id)
+	local fine   = memory.readbyte(self.addrs.fine_speed)
+	local coarse = memory.readbyte(self.addrs.coarse_speed)
+	local speed = Player.compute_speed(fine, coarse)
+	local pill = 'dd' -- TODO
+	local board = memory.readbyterange(self.addrs.board, BOARD_SIZE):gsub('.', cell_memory_to_protocol)
+	-- TODO: does the board include the pill? if so, erase it
+	local prefix = table.concat({'state', self.id, speed, pill, board, ''}, ' ')
+	if self.mode == PLAYER_MODE.cleanup then
+		o(prefix .. 'cleanup')
+	elseif self.mode == PLAYER_MODE.control then
+		-- TODO
+		o(prefix .. 'control')
+	end
 end
 
 local old_board_mode = 0
@@ -188,9 +261,6 @@ local function send_messages(before)
 				          }
 			else
 				print('Wow! Player count is not 1 or 2, but ' .. player_count .. '. Everything will probably break shortly.')
-			end
-			for _, player in ipairs(players) do
-				player:send_state()
 			end
 		end
 	end
