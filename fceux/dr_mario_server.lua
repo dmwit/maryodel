@@ -85,28 +85,55 @@ local function i()
 	return v
 end
 
-local PLAYER_MODE = { cleanup = 0, control = 1, lost = 2 }
-local ADDR = { board_mode = 0x46, players = 0x727 }
+local PLAYER_MODE =
+	{ cleanup = 0
+	, control = 1
+	, lost = 2
+	}
+
+local ADDR =
+	{ board_mode = 0x46
+	, players = 0x727
+	, speed_bonus_table = 0xa3a7
+	, frames_per_row_table = 0xa7af
+	}
+
 local BOARD_MODE = { prep = 8, game = 4 }
-local PLAYER_1_ADDRS = { pill_sequence_counter = 0x0327, pill_drop_counter = 0x0312 }
-local PLAYER_2_ADDRS = { pill_sequence_counter = 0x03A7, pill_drop_counter = 0x0392 }
+
+local PLAYER_1_ADDRS =
+	{ pill_sequence_counter = 0x0327
+	, pill_drop_counter = 0x0312
+	, fine_speed = 0x030a
+	, coarse_speed = 0x030b
+	}
+
+local PLAYER_2_ADDRS =
+	{ pill_sequence_counter = 0x03A7
+	, pill_drop_counter = 0x0392
+	, fine_speed = 0x038a
+	, coarse_speed = 0x038b
+	}
 
 local Player = {}
 
 function Player.new(addrs, id)
 	return { addrs = addrs, id = id
 	       , mode = PLAYER_MODE.cleanup
+	       , coarse = memory.readbyte(addrs.coarse_speed)
 	       , old_sequence = memory.readbyte(addrs.pill_sequence_counter)
 	       , old_drop = memory.readbyte(addrs.pill_drop_counter)
+	       , old_fine = memory.readbyte(addrs.fine_speed)
 	       , seen_nonzero_drop = false
-	       , update_mode = Player.update_mode
+	       , update = Player.update
 	       , send_state = Player.send_state
 	       }
 end
 
-function Player.update_mode(self)
+function Player.update(self)
 	local sequence = memory.readbyte(self.addrs.pill_sequence_counter)
 	local drop = memory.readbyte(self.addrs.pill_drop_counter)
+	local fine = memory.readbyte(self.addrs.fine_speed)
+
 	if self.mode == PLAYER_MODE.cleanup then
 		if self.old_sequence ~= sequence then
 			self.mode = PLAYER_MODE.control
@@ -121,8 +148,20 @@ function Player.update_mode(self)
 			o('mode ' .. self.id .. ' cleanup')
 		end
 	end
+
+	if self.old_fine ~= fine then
+		o('speed ' .. self.id .. ' ' .. Player.compute_speed(fine, self.coarse))
+	end
+
 	self.old_sequence = sequence
 	self.old_drop = drop
+	self.old_fine = fine
+end
+
+-- N.B. not part of new players, and does not take self!
+function Player.compute_speed(fine, coarse)
+	local speed_ix = memory.readbyte(ADDR.speed_bonus_table + coarse) + fine
+	return memory.readbyte(ADDR.frames_per_row_table + speed_ix) + 1
 end
 
 function Player.send_state(self)
@@ -158,7 +197,7 @@ local function send_messages(before)
 
 	if before and (board_mode == BOARD_MODE.game or board_mode == BOARD_MODE.prep) then
 		for _, player in ipairs(players) do
-			player:update_mode()
+			player:update()
 		end
 	end
 end
