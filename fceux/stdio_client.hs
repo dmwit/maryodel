@@ -56,7 +56,7 @@ openWriteEnd dir 0 = die $ "Couldn't open " <> dir </> "c2s for writing. Is the 
 openWriteEnd dir n = catch
 	(openFile (dir </> "c2s") WriteMode)
 	(\e -> if isDoesNotExistError e
-	       then threadDelay 1000 >> openWriteEnd dir (n-1)
+	       then threadDelay 100000 >> openWriteEnd dir (n-1)
 	       else throwIO e
 	)
 
