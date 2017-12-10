@@ -85,9 +85,9 @@ local function i()
 	return v
 end
 
-local LMODE = { cleanup = 0, control = 1, lost = 2 }
-local ADDR = { mode = 0x46, players = 0x727 }
-local MODE = { prep = 8, game = 4 }
+local PLAYER_MODE = { cleanup = 0, control = 1, lost = 2 }
+local ADDR = { board_mode = 0x46, players = 0x727 }
+local BOARD_MODE = { prep = 8, game = 4 }
 local PLAYER_1_ADDRS = { pill_sequence_counter = 0x0327, pill_drop_counter = 0x0312 }
 local PLAYER_2_ADDRS = { pill_sequence_counter = 0x03A7, pill_drop_counter = 0x0392 }
 
@@ -95,32 +95,29 @@ local Player = {}
 
 function Player.new(addrs, id)
 	return { addrs = addrs, id = id
-	       , logical_mode = LMODE.cleanup
-	       , old_mode = memory.readbyte(ADDR.mode)
+	       , mode = PLAYER_MODE.cleanup
 	       , old_sequence = memory.readbyte(addrs.pill_sequence_counter)
 	       , old_drop = memory.readbyte(addrs.pill_drop_counter)
 	       , seen_nonzero_drop = false
-	       , update_logical_mode = Player.update_logical_mode
+	       , update_mode = Player.update_mode
 	       , send_state = Player.send_state
 	       }
 end
 
-function Player.update_logical_mode(self)
+function Player.update_mode(self)
 	local sequence = memory.readbyte(self.addrs.pill_sequence_counter)
 	local drop = memory.readbyte(self.addrs.pill_drop_counter)
-	if self.logical_mode == LMODE.cleanup then
-		local mode = memory.readbyte(ADDR.mode)
+	if self.mode == PLAYER_MODE.cleanup then
 		if self.old_sequence ~= sequence then
-			self.logical_mode = LMODE.control
+			self.mode = PLAYER_MODE.control
 			self.seen_nonzero_drop = false
 			-- TODO: which pill are they getting?
 			o('mode ' .. self.id .. ' control')
 		end
-		self.old_mode = mode
-	elseif self.logical_mode == LMODE.control then
+	elseif self.mode == PLAYER_MODE.control then
 		self.seen_nonzero_drop = self.seen_nonzero_drop or (drop ~= 0)
 		if self.seen_nonzero_drop and self.old_drop == drop then
-			self.logical_mode = LMODE.cleanup
+			self.mode = PLAYER_MODE.cleanup
 			o('mode ' .. self.id .. ' cleanup')
 		end
 	end
@@ -133,15 +130,15 @@ function Player.send_state(self)
 	o('state ' .. self.id)
 end
 
-local old_mode = 0
+local old_board_mode = 0
 local player_count = 0
 local players = {}
 
 local function send_messages(before)
-	local mode = memory.readbyte(ADDR.mode)
-	if mode ~= old_mode then
-		old_mode = mode
-		if     mode == MODE.prep then
+	local board_mode = memory.readbyte(ADDR.board_mode)
+	if board_mode ~= old_board_mode then
+		old_board_mode = board_mode
+		if board_mode == BOARD_MODE.prep then
 			player_count = memory.readbyte(ADDR.players)
 			o('players ' .. player_count)
 			if player_count == 1 then
@@ -159,9 +156,9 @@ local function send_messages(before)
 		end
 	end
 
-	if before and (mode == MODE.game or mode == MODE.prep) then
+	if before and (board_mode == BOARD_MODE.game or board_mode == BOARD_MODE.prep) then
 		for _, player in ipairs(players) do
-			player:update_logical_mode()
+			player:update_mode()
 		end
 	end
 end
