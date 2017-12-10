@@ -97,6 +97,7 @@ local ADDR =
 	, players = 0x727
 	, speed_bonus_table = 0xa3a7
 	, frames_per_row_table = 0xa7af
+	, pill_sequence = 0x780
 	}
 
 local BOARD_MODE = { prep = 8, game = 4 }
@@ -138,6 +139,17 @@ local CELL_TOP_NIBBLE_MAP =
 	, [0x8] =  4
 	, [0xd] =  0
 	}
+local PILL_LOOKAHEAD =
+	{ [0] = 'rv'
+	, [1] = 'ru'
+	, [2] = 'rw'
+	, [3] = 'qv'
+	, [4] = 'qu'
+	, [5] = 'qw'
+	, [6] = 'sv'
+	, [7] = 'su'
+	, [8] = 'sw'
+	}
 
 local function bcd_decode(byte)
 	local bot_nibble = byte % 16
@@ -162,6 +174,7 @@ function Player.new(addrs, id)
 	       , seen_nonzero_drop = false
 	       , update = Player.update
 	       , send_state = Player.send_state
+	       , lookahead = Player.lookahead
 	       }
 end
 
@@ -174,8 +187,7 @@ function Player.update(self)
 		if self.old_sequence ~= sequence then
 			self.mode = PLAYER_MODE.control
 			self.seen_nonzero_drop = false
-			-- TODO: which pill are they getting?
-			o('mode ' .. self.id .. ' control')
+			o('mode ' .. self.id .. ' control ' .. self:lookahead())
 		end
 	elseif self.mode == PLAYER_MODE.control then
 		self.seen_nonzero_drop = self.seen_nonzero_drop or (drop ~= 0)
@@ -230,7 +242,7 @@ function Player.send_state(self)
 	local fine   = memory.readbyte(self.addrs.fine_speed)
 	local coarse = memory.readbyte(self.addrs.coarse_speed)
 	local speed = Player.compute_speed(fine, coarse)
-	local pill = 'dd' -- TODO
+	local pill = self:lookahead()
 	local board = memory.readbyterange(self.addrs.board, BOARD_SIZE):gsub('.', cell_memory_to_protocol)
 	-- TODO: does the board include the pill? if so, erase it
 	local prefix = table.concat({'state', self.id, speed, pill, board, ''}, ' ')
@@ -240,6 +252,11 @@ function Player.send_state(self)
 		-- TODO
 		o(prefix .. 'control')
 	end
+end
+
+function Player.lookahead(self)
+	local ix = (memory.readbyte(self.addrs.pill_sequence_counter)-1) % 128
+	return PILL_LOOKAHEAD[memory.readbyte(ADDR.pill_sequence+ix)]
 end
 
 local old_board_mode = 0
