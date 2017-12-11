@@ -33,10 +33,10 @@ interaction). For example, this negotiation might look like this:
     > request-version
     < version 1.0.0
 
-In this example, and others in this document, the prefix <code>> </code>
-indicates a message sent from the server to the client, and <code>< </code>
-indicates a message sent from the client to the server. These marks are not
-actually part of the messages.
+In this example, and others in this document, the prefix <code>> </code>&nbsp;
+indicates a message sent from the server to the client, and
+<code>< </code>&nbsp;indicates a message sent from the client to the server.
+These marks are not actually part of the messages.
 
 After the version negotiation, the server announces the number of players.
 Currently this phase is purely informational, and there is no negotiation of
@@ -251,11 +251,11 @@ protocol. This document describes version `0-statefix` of the protocol.
 
 As mentioned in the overview, this document contains many example exchanges
 between a hypothetical server and client. These exchanges are prefaced by
-<code>> </code> to indicate that the message was sent from the server to the
-client or by <code>< </code> to indicate that the message was sent from the
-client to the server. In both cases, the two bytes indicating directionality
-are not a part of the message; they are only a part of this document's
-presentation.
+<code>> </code>&nbsp;to indicate that the message was sent from the server to
+the client or by <code>< </code>&nbsp;to indicate that the message was sent
+from the client to the server. In both cases, the two bytes indicating
+directionality are not a part of the message; they are only a part of this
+document's presentation.
 
 An *application* is either a server or a client.
 
@@ -735,16 +735,16 @@ of what it means for the server when in the control state.
 
 Landing state: unchanged
 
-A *debug instruction* has the form <code> \<position\> \<cell\></code>. It
+A *debug instruction* has the form <code>&nbsp;\<position\> \<cell\></code>. It
 indicates that the client would like to mark the given position with the
 graphic for the given cell.
 
 Note the lack of component separator in the instantiation format and the
 initial component separator in the definition of a debug instruction. For
 example, the bare message `debug` is valid, as is `debug 0 0 a`, but
-<code>debug </code> with a trailing component separator is not a valid message,
-nor is `debug0 0 a` with no intervening component separator between `debug` and
-the first position.
+<code>debug </code>&nbsp;with a trailing component separator is not a valid
+message, nor is `debug0 0 a` with no intervening component separator between
+`debug` and the first position.
 
 Repeat positions are allowed.
 
