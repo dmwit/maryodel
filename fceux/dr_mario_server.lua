@@ -113,6 +113,10 @@ local PLAYER_1_ADDRS =
 	, board = 0x400
 	, virus_count = 0x324
 	, level = 0x734
+	, pill_x = 0x305
+	, pill_y = 0x306
+	, pill_orientation = 0x325
+	, pill_colors = 0x301
 	}
 
 local PLAYER_2_ADDRS =
@@ -123,6 +127,10 @@ local PLAYER_2_ADDRS =
 	, board = 0x500
 	, virus_count = 0x3a4
 	, level = 0x735
+	, pill_x = 0x385
+	, pill_y = 0x386
+	, pill_orientation = 0x3a5
+	, pill_colors = 0x381
 	}
 
 local CELL_BASE_OFFSET = 0x60
@@ -175,6 +183,7 @@ function Player.new(addrs, id)
 	       , update = Player.update
 	       , send_state = Player.send_state
 	       , lookahead = Player.lookahead
+	       , lookcurrent = Player.lookcurrent
 	       }
 end
 
@@ -242,20 +251,41 @@ function Player.send_state(self)
 	local fine   = memory.readbyte(self.addrs.fine_speed)
 	local coarse = memory.readbyte(self.addrs.coarse_speed)
 	local speed = Player.compute_speed(fine, coarse)
-	local pill = self:lookahead()
+	local lookahead_pill = self:lookahead()
 	local board = memory.readbyterange(self.addrs.board, BOARD_SIZE):gsub('.', cell_memory_to_protocol)
-	local prefix = table.concat({'state', self.id, speed, pill, board, ''}, ' ')
+	local prefix = table.concat({'state', self.id, speed, lookahead_pill, board, ''}, ' ')
 	if self.mode == PLAYER_MODE.cleanup then
 		o(prefix .. 'cleanup')
 	elseif self.mode == PLAYER_MODE.control then
-		-- TODO
-		o(prefix .. 'control')
+		local drop = speed - memory.readbyte(self.addrs.pill_drop_counter)
+		local current_pill = self:lookcurrent()
+		local x = memory.readbyte(self.addrs.pill_x)
+		local y = memory.readbyte(self.addrs.pill_y)
+		o(table.concat({prefix .. 'control', drop, current_pill, x, y}, ' '))
 	end
 end
 
 function Player.lookahead(self)
 	local ix = (memory.readbyte(self.addrs.pill_sequence_counter)-1) % 128
 	return PILL_LOOKAHEAD[memory.readbyte(ADDR.pill_sequence+ix)]
+end
+
+-- doesn't make any promises to return something sensible when the given player
+-- is not in control mode
+function Player.lookcurrent(self)
+	local orientation = memory.readbyte(self.addrs.pill_orientation)
+	local colors = memory.readbyterange(self.addrs.pill_colors, 2)
+	local color1 = CELL_BOTTOM_NIBBLE_MAP[colors:byte(1)]
+	local color2 = CELL_BOTTOM_NIBBLE_MAP[colors:byte(2)]
+	local shape1 = 16
+	local shape2 = 20
+	if orientation % 2 == 1 then
+		shape1, shape2 = 8, 12
+	end
+	if orientation >= 2 then
+		color1, color2 = color2, color1
+	end
+	return string.char(CELL_BASE_OFFSET + shape1 + color1, CELL_BASE_OFFSET + shape2 + color2)
 end
 
 local old_board_mode = 0
@@ -288,8 +318,25 @@ local function send_messages(before)
 	end
 end
 
-local function send_messages_before() send_messages(true ) end
-local function send_messages_after()  send_messages(false) end
+local function receive_messages(before)
+	local message = i()
+	while message ~= nil do
+		if message == 'request-state' then
+			for _, player in ipairs(players) do
+				player:send_state()
+			end
+		else
+			print('WARNING: Ignoring an unimplemented message type.')
+			print('         ' .. message)
+		end
+		message = i()
+	end
+end
+
+local function handle_frame(before)
+	send_messages(before)
+	receive_messages(before)
+end
 
 print('Negotiating version...')
 o('propose-version ' .. PROTOCOL_VERSION)
@@ -307,5 +354,5 @@ else
 	print('Negotiated version ' .. PROTOCOL_VERSION .. '.')
 end
 
-emu.registerbefore(send_messages_before)
-emu.registerafter(send_messages_after)
+emu.registerbefore(function() handle_frame(true ) end)
+emu.registerafter (function() handle_frame(false) end)
