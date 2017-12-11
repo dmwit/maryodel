@@ -244,7 +244,6 @@ function Player.send_state(self)
 	local speed = Player.compute_speed(fine, coarse)
 	local pill = self:lookahead()
 	local board = memory.readbyterange(self.addrs.board, BOARD_SIZE):gsub('.', cell_memory_to_protocol)
-	-- TODO: does the board include the pill? if so, erase it
 	local prefix = table.concat({'state', self.id, speed, pill, board, ''}, ' ')
 	if self.mode == PLAYER_MODE.cleanup then
 		o(prefix .. 'cleanup')
