@@ -70,6 +70,7 @@ main = do
 
 	hSetBuffering stdin  NoBuffering
 	hSetBuffering stdout NoBuffering
+	hSetBuffering hc2s   NoBuffering
 	setVersion hs2c hc2s
 	forkIO (LBS.hGetContents hs2c >>= LBS.putStr)
 	LBS.getContents >>= LBS.hPutStr hc2s
