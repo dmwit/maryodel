@@ -612,8 +612,8 @@ a position with y coordinate 15.
 The sequence of columns component MUST NOT have any duplicate bytes. The
 sequence of cells component MUST have the same number of bytes as the sequence
 of columns component. The shape bits of each cell in the sequence of cells
-component MUST be 4 (disconnected). Messages beginning <code>garbage you
-</code> are only allowed in the cleanup state.
+component MUST be 4 (disconnected). Messages beginning
+<code>garbage you </code>&nbsp;are only allowed in the cleanup state.
 
 This message indicates that the given player is being sent garbage. The
 positions indicated by the sequence of columns component are overwritten by the
