@@ -179,6 +179,7 @@ function Player.new(addrs, id)
 		, mode = PLAYER_MODE.virus_placement
 		, coarse = memory.readbyte(addrs.coarse_speed)
 		, garbage = {}
+		, garbage_valid = true
 		, old_sequence = memory.readbyte(addrs.pill_sequence_counter)
 		, old_drop = memory.readbyte(addrs.pill_drop_counter)
 		, old_fine = memory.readbyte(addrs.fine_speed)
@@ -189,7 +190,7 @@ function Player.new(addrs, id)
 		, lookcurrent = Player.lookcurrent
 		, create_garbage_callback = Player.create_garbage_callback
 		}
-	memory.registerwrite(addrs.board, BOARD_WIDTH, self:create_garbage_callback())
+	memory.registerwrite(addrs.board, 2*BOARD_WIDTH, self:create_garbage_callback())
 	return self
 end
 
@@ -225,15 +226,16 @@ function Player.update(self)
 
 	-- TODO: can the garbage writes every span across frames? it wouldn't be
 	-- nice to report half the garbage on one frame and half on the next
-	if next(self.garbage) ~= nil then
+	if self.garbage_valid and next(self.garbage) ~= nil then
 		local columns, cells = '', ''
 		for column, cell in pairs(self.garbage) do
 			columns, cells = columns .. column, cells .. cell
 		end
 		o(table.concat({'garbage', self.id, columns, cells}, ' '))
-		self.garbage = {}
 	end
 
+	self.garbage = {}
+	self.garbage_valid = true
 	self.old_sequence = sequence
 	self.old_drop = drop
 	self.old_fine = fine
@@ -308,6 +310,21 @@ function Player.lookcurrent(self)
 	return string.char(CELL_BASE_OFFSET + shape1 + color1, CELL_BASE_OFFSET + shape2 + color2)
 end
 
+-- There are a couple interesting ways to see writes to the top row.
+-- One is garbage. Another is a pill landing there. Another is a clear
+-- happening there.
+--
+-- So one heuristic for finding garbage is:
+-- 1. There was a write of a disconnected cell in the top row.
+-- 2. There was no write indicating a clear in the top row (hence that
+-- the disconnected cell write was the result of disconnecting a
+-- horizontal pill).
+-- 3. There was no write indicating a clear in the second row (hence
+-- that the disconnected cell write was the result of disconnecting a
+-- vertical pill).
+--
+-- That heuristic should be sufficient, but just for fun, we strengthen (3) to
+-- be simply "There was no write in the second row.".
 function Player.create_garbage_callback(self)
 	return function(addr, size)
 		if size ~= 1 then
@@ -316,8 +333,13 @@ function Player.create_garbage_callback(self)
 			print('         to handle this possibility.')
 		end
 		local byte = memory.readbyte(addr)
+		local shape_nibble = (byte - byte % 16) / 16
+		local column = addr - self.addrs.board
+		self.garbage_valid = self.garbage_valid
+		                 and shape_nibble == 8
+		                 and column < BOARD_WIDTH
 		if byte ~= CELL_EMPTY then
-			self.garbage[addr-self.addrs.board] = cell_memory_byte_to_protocol(byte)
+			self.garbage[column] = cell_memory_byte_to_protocol(byte)
 		end
 	end
 end
