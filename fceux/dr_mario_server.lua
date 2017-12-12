@@ -224,8 +224,8 @@ function Player.update(self)
 		o('speed ' .. self.id .. ' ' .. Player.compute_speed(fine, self.coarse))
 	end
 
-	-- TODO: can the garbage writes every span across frames? it wouldn't be
-	-- nice to report half the garbage on one frame and half on the next
+	-- TODO: Can the garbage writes ever span across frames? It wouldn't be
+	-- nice to report half the garbage on one frame and half on the next.
 	if self.garbage_valid and next(self.garbage) ~= nil then
 		local columns, cells = '', ''
 		for column, cell in pairs(self.garbage) do
