@@ -252,7 +252,7 @@ local function cell_memory_byte_to_protocol(byte)
 	local memory_top_nibble = (byte - memory_bot_nibble) / 16
 	local protocol_color = CELL_BOTTOM_NIBBLE_MAP[memory_bot_nibble]
 	local protocol_shape =    CELL_TOP_NIBBLE_MAP[memory_top_nibble]
-	if protocol_shape then
+	if protocol_shape and protocol_color then
 		return string.char(CELL_BASE_OFFSET + protocol_color + protocol_shape)
 	else
 		return 'd'
