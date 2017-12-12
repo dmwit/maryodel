@@ -133,6 +133,7 @@ local PLAYER_2_ADDRS =
 	, pill_colors = 0x381
 	}
 
+local CELL_EMPTY = 0xff
 local CELL_BASE_OFFSET = 0x60
 local CELL_BOTTOM_NIBBLE_MAP =
 	{ [0] = 2
@@ -173,18 +174,23 @@ end
 local Player = {}
 
 function Player.new(addrs, id)
-	return { addrs = addrs, id = id
-	       , mode = PLAYER_MODE.virus_placement
-	       , coarse = memory.readbyte(addrs.coarse_speed)
-	       , old_sequence = memory.readbyte(addrs.pill_sequence_counter)
-	       , old_drop = memory.readbyte(addrs.pill_drop_counter)
-	       , old_fine = memory.readbyte(addrs.fine_speed)
-	       , seen_nonzero_drop = false
-	       , update = Player.update
-	       , send_state = Player.send_state
-	       , lookahead = Player.lookahead
-	       , lookcurrent = Player.lookcurrent
-	       }
+	local self =
+		{ addrs = addrs, id = id
+		, mode = PLAYER_MODE.virus_placement
+		, coarse = memory.readbyte(addrs.coarse_speed)
+		, garbage = {}
+		, old_sequence = memory.readbyte(addrs.pill_sequence_counter)
+		, old_drop = memory.readbyte(addrs.pill_drop_counter)
+		, old_fine = memory.readbyte(addrs.fine_speed)
+		, seen_nonzero_drop = false
+		, update = Player.update
+		, send_state = Player.send_state
+		, lookahead = Player.lookahead
+		, lookcurrent = Player.lookcurrent
+		, create_garbage_callback = Player.create_garbage_callback
+		}
+	memory.registerwrite(addrs.board, BOARD_WIDTH, self:create_garbage_callback())
+	return self
 end
 
 function Player.update(self)
@@ -217,6 +223,17 @@ function Player.update(self)
 		o('speed ' .. self.id .. ' ' .. Player.compute_speed(fine, self.coarse))
 	end
 
+	-- TODO: can the garbage writes every span across frames? it wouldn't be
+	-- nice to report half the garbage on one frame and half on the next
+	if next(self.garbage) ~= nil then
+		local columns, cells = '', ''
+		for column, cell in pairs(self.garbage) do
+			columns, cells = columns .. column, cells .. cell
+		end
+		o(table.concat({'garbage', self.id, columns, cells}, ' '))
+		self.garbage = {}
+	end
+
 	self.old_sequence = sequence
 	self.old_drop = drop
 	self.old_fine = fine
@@ -228,8 +245,7 @@ function Player.compute_speed(fine, coarse)
 	return memory.readbyte(ADDR.frames_per_row_table + speed_ix) + 1
 end
 
-local function cell_memory_to_protocol(char)
-	local byte = char:byte()
+local function cell_memory_byte_to_protocol(byte)
 	local memory_bot_nibble = byte % 16
 	local memory_top_nibble = (byte - memory_bot_nibble) / 16
 	local protocol_color = CELL_BOTTOM_NIBBLE_MAP[memory_bot_nibble]
@@ -239,6 +255,10 @@ local function cell_memory_to_protocol(char)
 	else
 		return 'd'
 	end
+end
+
+local function cell_memory_char_to_protocol(char)
+	return cell_memory_byte_to_protocol(char:byte())
 end
 
 -- Where possible, we re-query emulator memory instead of using any state we've
@@ -252,7 +272,7 @@ function Player.send_state(self)
 	local coarse = memory.readbyte(self.addrs.coarse_speed)
 	local speed = Player.compute_speed(fine, coarse)
 	local lookahead_pill = self:lookahead()
-	local board = memory.readbyterange(self.addrs.board, BOARD_SIZE):gsub('.', cell_memory_to_protocol)
+	local board = memory.readbyterange(self.addrs.board, BOARD_SIZE):gsub('.', cell_memory_char_to_protocol)
 	local prefix = table.concat({'state', self.id, speed, lookahead_pill, board, ''}, ' ')
 	if self.mode == PLAYER_MODE.cleanup then
 		o(prefix .. 'cleanup')
@@ -286,6 +306,20 @@ function Player.lookcurrent(self)
 		color1, color2 = color2, color1
 	end
 	return string.char(CELL_BASE_OFFSET + shape1 + color1, CELL_BASE_OFFSET + shape2 + color2)
+end
+
+function Player.create_garbage_callback(self)
+	return function(addr, size)
+		if size ~= 1 then
+			print('WARNING: Saw unexpected write size of ' .. size .. ' for address ' .. addr)
+			print('         in garbage callback. Weird! The code probably needs to be adapted')
+			print('         to handle this possibility.')
+		end
+		local byte = memory.readbyte(addr)
+		if byte ~= CELL_EMPTY then
+			self.garbage[addr-self.addrs.board] = cell_memory_byte_to_protocol(byte)
+		end
+	end
 end
 
 local old_board_mode = 0
