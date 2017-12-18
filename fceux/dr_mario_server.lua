@@ -90,6 +90,7 @@ local PLAYER_MODE =
 	, control = 1
 	, lost = 2
 	, virus_placement = 3
+	, won = 4
 	}
 
 local ADDR =
@@ -134,6 +135,7 @@ local PLAYER_2_ADDRS =
 	}
 
 local CELL_EMPTY = 0xff
+local CELL_TWO_EMPTIES = string.char(CELL_EMPTY, CELL_EMPTY)
 local CELL_BASE_OFFSET = 0x60
 local CELL_BOTTOM_NIBBLE_MAP =
 	{ [0] = 2
@@ -190,8 +192,12 @@ function Player.new(addrs, id)
 		, lookahead = Player.lookahead
 		, lookcurrent = Player.lookcurrent
 		, create_garbage_callback = Player.create_garbage_callback
+		, create_winner_callback = Player.create_winner_callback
+		, create_loser_callback = Player.create_loser_callback
 		}
 	memory.registerwrite(addrs.board, 2*BOARD_WIDTH, self:create_garbage_callback())
+	memory.registerwrite(addrs.virus_count, 1, self:create_winner_callback())
+	memory.registerwrite(addrs.pill_x, 1, self:create_loser_callback())
 	return self
 end
 
@@ -210,7 +216,9 @@ function Player.update(self)
 		self.seen_nonzero_drop = self.seen_nonzero_drop or (drop ~= 0)
 		if self.seen_nonzero_drop and self.old_drop == drop then
 			self.mode = PLAYER_MODE.cleanup
-			o('mode ' .. self.id .. ' cleanup')
+			if playing then
+				o('mode ' .. self.id .. ' cleanup')
+			end
 		end
 	elseif self.mode == PLAYER_MODE.virus_placement then
 		local viruses = bcd_decode(memory.readbyte(self.addrs.virus_count))
@@ -272,6 +280,7 @@ end
 -- the world and not what the potentially buggy server implementation thinks
 -- the state of the world is.
 function Player.send_state(self)
+	if not playing then return end
 	local fine   = memory.readbyte(self.addrs.fine_speed)
 	local coarse = memory.readbyte(self.addrs.coarse_speed)
 	local speed = Player.compute_speed(fine, coarse)
@@ -346,8 +355,30 @@ function Player.create_garbage_callback(self)
 	end
 end
 
+function Player.create_winner_callback(self)
+	return function(addr, size)
+		if memory.readbyte(addr) == 0 and self.mode == PLAYER_MODE.cleanup and playing then
+			o('winner ' .. self.id)
+			self.mode = PLAYER_MODE.won
+			playing = false
+		end
+	end
+end
+
+function Player.create_loser_callback(self)
+	return function(addr, size)
+		if self.mode == PLAYER_MODE.cleanup and playing and
+		   memory.readbyterange(self.addrs.board + 3, 2) ~= CELL_TWO_EMPTIES then
+			o('loser ' .. self.id)
+			self.mode = PLAYER_MODE.lost
+			playing = false
+		end
+	end
+end
+
 local old_board_mode = 0
 local player_count = 0
+playing = false
 local players = {}
 
 local function send_messages(before)
@@ -356,6 +387,7 @@ local function send_messages(before)
 		old_board_mode = board_mode
 		if board_mode == BOARD_MODE.prep then
 			player_count = memory.readbyte(ADDR.players)
+			playing = true
 			o('players ' .. player_count)
 			if player_count == 1 then
 				players = { Player.new(PLAYER_1_ADDRS, 'you') }
