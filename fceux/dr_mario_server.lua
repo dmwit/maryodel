@@ -184,6 +184,7 @@ function Player.new(addrs, id)
 		, old_drop = memory.readbyte(addrs.pill_drop_counter)
 		, old_fine = memory.readbyte(addrs.fine_speed)
 		, seen_nonzero_drop = false
+		, seen_small_virus_count = false
 		, update = Player.update
 		, send_state = Player.send_state
 		, lookahead = Player.lookahead
@@ -214,7 +215,8 @@ function Player.update(self)
 	elseif self.mode == PLAYER_MODE.virus_placement then
 		local viruses = bcd_decode(memory.readbyte(self.addrs.virus_count))
 		local max_viruses = max_virus_count(memory.readbyte(self.addrs.level))
-		if viruses >= max_viruses then
+		self.seen_small_virus_count = self.seen_small_virus_count or viruses < max_viruses
+		if self.seen_small_virus_count and viruses >= max_viruses then
 			self.mode = PLAYER_MODE.cleanup
 			self:send_state()
 		end
