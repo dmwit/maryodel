@@ -185,10 +185,14 @@ function Player.new(addrs, id)
 		, old_sequence = memory.readbyte(addrs.pill_sequence_counter)
 		, old_drop = memory.readbyte(addrs.pill_drop_counter)
 		, old_fine = memory.readbyte(addrs.fine_speed)
+		, old_pill = ''
+		, old_x = -1
+		, old_y = -1
 		, seen_nonzero_drop = false
 		, seen_small_virus_count = false
 		, update = Player.update
 		, send_state = Player.send_state
+		, send_pill = Player.send_pill
 		, lookahead = Player.lookahead
 		, lookcurrent = Player.lookcurrent
 		, create_garbage_callback = Player.create_garbage_callback
@@ -211,6 +215,10 @@ function Player.update(self)
 			self.mode = PLAYER_MODE.control
 			self.seen_nonzero_drop = false
 			o('mode ' .. self.id .. ' control ' .. self:lookahead())
+			self:send_pill(memory.readbyte(self.addrs.pill_x)
+			              ,memory.readbyte(self.addrs.pill_y)
+			              ,self:lookcurrent()
+			              )
 		end
 	elseif self.mode == PLAYER_MODE.control then
 		self.seen_nonzero_drop = self.seen_nonzero_drop or (drop ~= 0)
@@ -218,6 +226,13 @@ function Player.update(self)
 			self.mode = PLAYER_MODE.cleanup
 			if playing then
 				o('mode ' .. self.id .. ' cleanup')
+			end
+		elseif playing then
+			local pill = self:lookcurrent()
+			local x = memory.readbyte(self.addrs.pill_x)
+			local y = memory.readbyte(self.addrs.pill_y)
+			if pill ~= self.old_pill or x ~= self.old_x or y ~= self.old_y then
+				self:send_pill(x, y, pill)
 			end
 		end
 	elseif self.mode == PLAYER_MODE.virus_placement then
@@ -319,6 +334,13 @@ function Player.lookcurrent(self)
 		color1, color2 = color2, color1
 	end
 	return string.char(CELL_BASE_OFFSET + shape1 + color1, CELL_BASE_OFFSET + shape2 + color2)
+end
+
+function Player.send_pill(self, x, y, pill)
+	o(table.concat({'pill', self.id, x, y, pill}, ' '))
+	self.old_x = x
+	self.old_y = y
+	self.old_pill = pill
 end
 
 -- There are a couple interesting ways to see writes to the top row.
