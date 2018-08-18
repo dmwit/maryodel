@@ -2,7 +2,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module DrMario.Model
+module Dr.Mario.Model
 	( Color(..)
 	, Shape(..)
 	, Cell(..), color

@@ -13,8 +13,8 @@ extra-source-files:  ChangeLog.md
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     DrMario.Model,
-                       DrMario.Protocol.Raw
+  exposed-modules:     Dr.Mario.Model,
+                       Dr.Mario.Protocol.Raw
   other-extensions:    BinaryLiterals,
                        TypeFamilies,
                        MultiParamTypeClasses

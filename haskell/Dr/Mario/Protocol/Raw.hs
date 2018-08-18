@@ -1,4 +1,4 @@
-module DrMario.Protocol.Raw
+module Dr.Mario.Protocol.Raw
 	( Identifier, identifier, unsafeIdentifier, getIdentifier
 	, playerIdentifier, you
 	, protocolVersion
