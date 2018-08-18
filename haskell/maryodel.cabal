@@ -13,12 +13,14 @@ extra-source-files:  ChangeLog.md
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     DrMario
+  exposed-modules:     DrMario.Model,
+                       DrMario.Protocol.Raw
   other-extensions:    BinaryLiterals,
                        TypeFamilies,
                        MultiParamTypeClasses
   build-depends:       ansi-terminal >=0.7 && <0.8,
-                       base >=4.10 && <4.11,
+                       base >=4.10 && <4.12,
+                       bytestring >=0.10 && <0.11,
                        containers >=0.5 && <0.6,
                        data-default-class >=0.1 && <0.2,
                        primitive >=0.6 && <0.7,

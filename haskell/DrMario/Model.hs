@@ -2,7 +2,7 @@
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 
-module DrMario
+module DrMario.Model
 	( Color(..)
 	, Shape(..)
 	, Cell(..), color
@@ -207,11 +207,12 @@ unsafeMove d p = Position
 move :: Board -> Pill -> Direction -> Maybe Pill
 move board pill dir =
 	if get board pos1 == Just Empty && (get board pos2 == Just Empty || y pos2 == height board)
-	then Just pill { bottomLeftPosition = pos1 }
+	then Just pill'
 	else Nothing
 	where
+	pill' = pill { bottomLeftPosition = pos1 }
 	pos1 = unsafeMove dir (bottomLeftPosition pill)
-	pos2 = unsafeMove (case orientation pill of Vertical -> up; Horizontal -> right) pos1
+	pos2 = otherPosition pill'
 
 -- | Does no checks that the rotated pill would be in bounds, overlapping with
 -- something on the board, etc. Just does it.
