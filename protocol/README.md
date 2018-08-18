@@ -247,7 +247,8 @@ that it makes sense to participate in this negotiation even when there is no
 version of the protocol that both the server and client can understand. All
 other messages&mdash;and even the structure of messages described
 above&mdash;are subject to radical modification in future versions of the
-protocol. This document describes version `0-statefix` of the protocol.
+protocol. This document describes version `0-statefix-oldfarfix` of the
+protocol.
 
 As mentioned in the overview, this document contains many example exchanges
 between a hypothetical server and client. These exchanges are prefaced by
@@ -578,12 +579,12 @@ any existing queued switch manipulations with the given ones.
 
 #### far-state (S)
 
-    far-state <identifier>
+    far-state <integer>
 
 Landing state: unchanged
 
-The server rejected a `request-state` message with the given identifier because
-it was 300 or more frames in the future.
+The server rejected a `request-state` message for the given frame because that
+frame was 300 or more frames in the future.
 
 #### frame (S)
 
@@ -656,12 +657,12 @@ time).
 
 #### old-state (S)
 
-    old-state <identifier>
+    old-state <integer>
 
 Landing state: unchanged
 
-The server rejected a `request-state` message with the given identifier because
-it requested the state for a frame in the past.
+The server rejected a `request-state` message for the given frame because that
+frame was in the past.
 
 #### pill (S)
 
@@ -812,6 +813,13 @@ cleanup` message (for the fourth variant) or transition to the game\_setup
 state before the relevant `mode you` message.
 
 ## Changes
+
+### `0-statefix` to `0-statefix-oldfarfix`
+
+Previously, `old-state` and `far-state` rejections were specified to include an
+identifier even though no identifier is given by the client in `state-request`
+messages. This version of the protocol updates these two rejection verbs to
+include the frame number from the corresponding `state-request` instead.
 
 ### `0` to `0-statefix`
 

@@ -10,7 +10,7 @@ module Dr.Mario.Model
 	, Position(..)
 	, Direction, left, right, down
 	, Rotation(..)
-	, Pill(..), otherPosition
+	, PillContent(..), Pill(..), otherPosition
 	, Board
 	, emptyBoard
 	, width, height
@@ -57,15 +57,18 @@ data Orientation = Horizontal | Vertical deriving (Bounded, Enum, Eq, Ord, Read,
 data Position = Position { x, y :: !Int } deriving (Eq, Ord, Read, Show)
 data Direction = Direction { dx, dy :: !Int } deriving (Eq, Ord, Show)
 data Rotation = Clockwise | Counterclockwise deriving (Bounded, Enum, Eq, Ord, Read, Show)
-data Pill = Pill
+data PillContent = PillContent
 	{ orientation :: !Orientation
 	, bottomLeftColor, otherColor :: !Color
+	} deriving (Eq, Ord, Read, Show)
+data Pill = Pill
+	{ content :: !PillContent
 	, bottomLeftPosition :: !Position
 	} deriving (Eq, Ord, Read, Show)
 
 otherPosition :: Pill -> Position
 otherPosition pill = unsafeMove dir pos where
-	dir = case orientation pill of
+	dir = case orientation (content pill) of
 		Horizontal -> right
 		Vertical   -> up
 	pos = bottomLeftPosition pill
@@ -214,10 +217,10 @@ move board pill dir =
 	pos1 = unsafeMove dir (bottomLeftPosition pill)
 	pos2 = otherPosition pill'
 
--- | Does no checks that the rotated pill would be in bounds, overlapping with
--- something on the board, etc. Just does it.
-unsafeRotate :: Pill -> Rotation -> Pill
-unsafeRotate pill rot = case rot of
+-- | Rotate a pill, ignoring its location information or the context of the
+-- board.
+rotateContent :: PillContent -> Rotation -> PillContent
+rotateContent content rot = case rot of
 	Clockwise -> case or of
 		Horizontal -> swapped
 		Vertical   -> rotated
@@ -225,16 +228,21 @@ unsafeRotate pill rot = case rot of
 		Horizontal -> rotated
 		Vertical   -> swapped
 	where
-	or = orientation pill
-	rotated = pill { orientation = perpendicular or }
-	swapped = rotated { bottomLeftColor = otherColor pill, otherColor = bottomLeftColor pill }
+	or = orientation content
+	rotated = content { orientation = perpendicular or }
+	swapped = rotated { bottomLeftColor = otherColor content, otherColor = bottomLeftColor content }
+
+-- | Does no checks that the rotated pill would be in bounds, overlapping with
+-- something on the board, etc. Just does it.
+unsafeRotate :: Pill -> Rotation -> Pill
+unsafeRotate pill rot = pill { content = rotateContent (content pill) rot }
 
 -- | Rotate a pill in the given direction. 'Vertical' to 'Horizontal' rotations
 -- kick left once if necessary. There are no vertical kicks. If there is no
 -- room for the rotated version even after checking the kick position, returns
 -- 'Nothing'.
 rotate :: Board -> Pill -> Rotation -> Maybe Pill
-rotate board pill rot = case orientation pill of
+rotate board pill rot = case orientation (content pill) of
 	Horizontal -> case neighbor up of
 		Nothing    -> rotated -- at the top of the board
 		Just Empty -> rotated
@@ -296,17 +304,17 @@ place board pill = case (placementValid, fastPathValid) of
 	--
 	-- We assume here that placementValid is True to elide some bounds checks.
 	fastPath :: Board
-	fastPath = case orientation pill of
+	fastPath = case orientation (content pill) of
 		Horizontal -> board { cells = cells board `V.unsafeUpd`
 				[ (x, cells board `V.unsafeIndex` x `U.unsafeUpd` [(y1, cell)])
-				| (x, cell) <- [ (x1, Occupied (bottomLeftColor pill) West)
-				               , (x2, Occupied (     otherColor pill) East)
+				| (x, cell) <- [ (x1, Occupied (bottomLeftColor (content pill)) West)
+				               , (x2, Occupied (     otherColor (content pill)) East)
 				               ]
 				]
 			}
 		Vertical -> board { cells = cells board `V.unsafeUpd` [(x1, cells board `V.unsafeIndex` x1 `U.unsafeUpd`
-				(  [(y1, Occupied (bottomLeftColor pill) (if y2Valid then South else Disconnected))]
-				++ [(y2, Occupied (     otherColor pill) North) | y2Valid]
+				(  [(y1, Occupied (bottomLeftColor (content pill)) (if y2Valid then South else Disconnected))]
+				++ [(y2, Occupied (     otherColor (content pill)) North) | y2Valid]
 				)
 			)]}
 
@@ -319,20 +327,20 @@ place board pill = case (placementValid, fastPathValid) of
 
 	slowPath = runST $ do
 		mb <- thaw board
-		ps <- case orientation pill of
+		ps <- case orientation (content pill) of
 			Horizontal -> do
-				munsafeSet mb pos1 (Occupied (bottomLeftColor pill) West)
-				munsafeSet mb pos2 (Occupied (     otherColor pill) East)
+				munsafeSet mb pos1 (Occupied (bottomLeftColor (content pill)) West)
+				munsafeSet mb pos2 (Occupied (     otherColor (content pill)) East)
 				return [pos1, pos2]
 			Vertical | y2Valid -> do
-				munsafeSet mb pos1 (Occupied (bottomLeftColor pill) South)
-				munsafeSet mb pos2 (Occupied (     otherColor pill) North)
+				munsafeSet mb pos1 (Occupied (bottomLeftColor (content pill)) South)
+				munsafeSet mb pos2 (Occupied (     otherColor (content pill)) North)
 				return [pos1, pos2]
 			_ -> do
 				-- This is going to get cleared anyway, but making it
 				-- Disconnected instead of South (so that one could merge with
 				-- the previous case if desired) is good defensive programming.
-				munsafeSet mb pos1 (Occupied (bottomLeftColor pill) Disconnected)
+				munsafeSet mb pos1 (Occupied (bottomLeftColor (content pill)) Disconnected)
 				return [pos2]
 		ps <- unsafeClear mb ps
 		unsafeDropAndClear mb ps
