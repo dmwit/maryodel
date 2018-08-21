@@ -99,8 +99,8 @@ requests for the far future are rejected with `far-state`. For example:
     < request-state control
     > frame 545
     > mode you control rw
-    > state you 19 rw ddddddddddddddddddddddddddddddddddddddddddddddddbcaacbbcbbddbdccaacbadcdaacdacbbdbdcddbaccbaddcaddcdbbaddbaccbaccbacdacbdacddddd control 19 qu 3 15
-    > state opponent 19 rw ddddddddddddddddddddddddddddddddddddddddddddddddddddddddcddddddddddddddddddddddddaddddddbbdddddddddddddddddddddddddddddddddddddd control 19 qu 3 15
+    > state you 19 rw ddddddddddddddddddddddddddddddddddddddddddddddddbcaacbbcbbddbdccaacbadcdaacdacbbdbdcddbaccbaddcaddcdbbaddbaccbaccbacdacbdacddddd control 19 3 15 qu
+    > state opponent 19 rw ddddddddddddddddddddddddddddddddddddddddddddddddddddddddcddddddddddddddddddddddddaddddddbbdddddddddddddddddddddddddddddddddddddd control 19 3 15 qu
 
 Clients can control their falling pill with the `queue` and `control` messages.
 The `queue` message specifies a sequence of button presses to initiate next
@@ -247,8 +247,9 @@ that it makes sense to participate in this negotiation even when there is no
 version of the protocol that both the server and client can understand. All
 other messages&mdash;and even the structure of messages described
 above&mdash;are subject to radical modification in future versions of the
-protocol. This document describes version `0-statefix-oldfarfix-boundfix` of
-the protocol.
+protocol. This document describes version
+`0-statefix-oldfarfix-boundfix-posfix`
+of the protocol.
 
 As mentioned in the overview, this document contains many example exchanges
 between a hypothetical server and client. These exchanges are prefaced by
@@ -687,7 +688,7 @@ free-floating piece is forced to either drop one row or lock in position.
 #### state (S)
 
     state <player identifier> <integer> <pill> <board> cleanup
-    state <player identifier> <integer> <pill> <board> control <integer> <pill> <position>
+    state <player identifier> <integer> <pill> <board> control <integer> <position> <pill>
 
 Landing state: unchanged
 
@@ -813,6 +814,18 @@ cleanup` message (for the fourth variant) or transition to the game\_setup
 state before the relevant `mode you` message.
 
 ## Changes
+
+### `0-statefix-oldfarfix-boundfix` to `0-statefix-oldfarfix-boundfix-posfix`
+
+In the `control` variant of the `state` message, the final three components'
+order have been shuffled for consistency with the `debug` and `pill` message
+formats. Old format:
+
+    state <player identifier> <integer> <pill> <board> control <integer> <pill> <position>
+
+New format:
+
+    state <player identifier> <integer> <pill> <board> control <integer> <position> <pill>
 
 ### `0-statefix-oldfarfix` to `0-statefix-oldfarfix-boundfix`
 

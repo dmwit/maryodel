@@ -28,8 +28,13 @@ import qualified Data.Map.Strict as M
 import qualified Data.Vector         as V
 import qualified Data.Vector.Unboxed as U
 
-import Dr.Mario.Model
+-- Only skip the Pill data constructor that conflicts with ServerMessage(Pill)
+-- (but still import the Pill type constructor); then we'll import that data
+-- constructor qualified below so we can still use it if we need to.
+import Dr.Mario.Model hiding (Pill(Pill))
+import Dr.Mario.Model (Pill)
 import Dr.Mario.Model.Internal
+import qualified Dr.Mario.Model as Model
 
 -- | An identifier is any sequence of 40 bytes with no ASCII spaces or
 -- newlines.
@@ -78,7 +83,7 @@ unsafeStringIdentifier = Identifier . BS.pack . map (fromIntegral . fromEnum)
 
 -- | The version of the protocol currently supported by this library.
 protocolVersion :: Identifier
-protocolVersion = unsafeStringIdentifier "0-statefix-oldfarfix"
+protocolVersion = unsafeStringIdentifier "0-statefix-oldfarfix-boundfix-posfix"
 
 -- | The special identifier used by servers to indicate the player associated
 -- with the current client.
@@ -101,6 +106,7 @@ data StateRequestTime
 	| NextControlMode
 	deriving (Eq, Ord, Read, Show)
 
+-- TODO: parseComponent = parseComponentSeparator *> parse
 -- | Messages that the server can send.
 data ServerMessage
 	= AcceptControl !Identifier
@@ -119,7 +125,7 @@ data ServerMessage
 	| ProposeVersion !Identifier
 	| RequestVersion
 	| Speed !PlayerIdentifier !Word32
-	| State !PlayerIdentifier !Word32 !Pill !Board !ModeState
+	| State !PlayerIdentifier !Word32 !PillContent !Board !ModeState
 	| Winner !PlayerIdentifier
 	deriving (Eq, Ord, Read, Show)
 
@@ -132,6 +138,15 @@ data ClientMessage
 	| Version !Identifier
 	deriving (Eq, Ord, Read, Show)
 
+-- | 'Parser's occasionally try to return something sensible even when they see
+-- illegal message formats. When they do this, they report some information
+-- about the invalid value they saw and the guess about what a reasonable
+-- corresponding valid value would be. In each constructor, invalid values come
+-- first, and the corrected values come last.
+--
+-- If you wanted to write an application which hewed very strictly to the
+-- protocol, you would be within your rights to throw an error if you ever
+-- received bytes which, when parsed, produced a 'ParseWarning'.
 data ParseWarning
 	= TruncatedLongIdentifier !ByteString !Identifier
 	| IgnoredLeadingZeros !ByteString
@@ -139,6 +154,7 @@ data ParseWarning
 	| XPositionOverflowed !Word32 !Int
 	| YPositionOverflowed !Word32 !Int
 	| AtomicButtonPressesIgnored [(Button, ButtonAction)] !ButtonPress
+	| InvalidGarbageCorrected [Int] [Cell] !(Map Int Color)
 	deriving (Eq, Ord, Read, Show)
 
 type Parser = WriterT [ParseWarning] A.Parser
@@ -264,6 +280,13 @@ instance Protocol PillContent where
 				}
 			_ -> fail "expected a pill, but saw two cells with empty or mismatched shapes"
 
+instance Protocol Pill where
+	parse = do
+		p <- parse
+		parseComponentSeparator
+		c <- parse
+		return Model.Pill { content = c, bottomLeftPosition = p }
+
 instance Protocol Board where
 	parse = do
 		-- TODO: Ouch. These list manipulations are due to the protocol being
@@ -321,3 +344,95 @@ instance Protocol ClientMessage where
 			parseComponentSeparator
 			Version <$> parse
 		] <* parseMessageSeparator
+
+instance Protocol ModeState where
+	parse = asum
+		[ CleanupState <$ parseComponent "cleanup"
+		, ControlState <$ parseComponent "control" <* parseComponentSeparator <*> parse <* parseComponentSeparator <*> parse
+		]
+
+instance Protocol ServerMessage where
+	parse = asum
+		[ parseSingle AcceptControl "accept-control"
+		, parseSingle AcceptQueue "accept-queue"
+		, parseSingle FarControl "far-control"
+		, parseSingle FarState "far-state"
+		, parseSingle Frame "frame"
+		, do
+			parseVerb "garbage"
+			parseComponentSeparator
+			player <- parse
+			rawColumns <- lift (A.takeWhile (\w -> 48 <= w && w <= 55))
+			parseComponentSeparator
+			rawCells <- many parse
+			let columns = [fromIntegral (c - 48) | c <- BS.unpack rawColumns]
+			    garbagePairs =
+			    	[ (column, color)
+			    	| (column, rawCell) <- zip columns rawCells
+			    	, Just color <- [color rawCell]
+			    	]
+			    numCells = length rawCells
+			    numColumns = BS.length rawColumns
+			    cellInvalid cell = shape cell /= Just Disconnected
+			    garbage = M.fromList garbagePairs
+			complainIf (  numColumns /= numCells
+			           || numColumns /= length garbage
+			           || any cellInvalid rawCells
+			           )
+			           (InvalidGarbageCorrected columns rawCells garbage)
+			return (Garbage player garbage)
+		, parseSingle Loser "loser"
+		, do
+			parseVerb "mode"
+			parseComponentSeparator
+			player <- parse
+			parseComponentSeparator
+			asum
+				[ do
+					parseComponent "cleanup"
+					return (ModeCleanup player)
+				, do
+					parseComponent "control"
+					parseComponentSeparator
+					pill <- parse
+					return (ModeControl player pill)
+				]
+		, parseSingle OldControl "old-control"
+		, parseSingle OldState "old-state"
+		, do
+			parseVerb "pill"
+			parseComponentSeparator
+			player <- parse
+			parseComponentSeparator
+			pill <- parse
+			return (Pill player pill)
+		, parseSingle Players "players"
+		, parseSingle ProposeVersion "propose-version"
+		, RequestVersion <$ parseVerb "request-version"
+		, do
+			parseVerb "speed"
+			parseComponentSeparator
+			player <- parse
+			parseComponentSeparator
+			speed <- parse
+			return (Speed player speed)
+		, do
+			parseVerb "state"
+			parseComponentSeparator
+			player <- parse
+			parseComponentSeparator
+			dropFrames <- parse
+			parseComponentSeparator
+			pill <- parse
+			parseComponentSeparator
+			board <- parse
+			parseComponentSeparator
+			modeState <- parse
+			return (State player dropFrames pill board modeState)
+		, parseSingle Winner "winner"
+		] <* parseMessageSeparator
+		where
+		parseSingle constructor verb = do
+			parseVerb verb
+			parseComponentSeparator
+			constructor <$> parse
