@@ -106,7 +106,6 @@ data StateRequestTime
 	| NextControlMode
 	deriving (Eq, Ord, Read, Show)
 
--- TODO: parseComponent = parseComponentSeparator *> parse
 -- | Messages that the server can send.
 data ServerMessage
 	= AcceptControl !Identifier
@@ -174,14 +173,37 @@ parseMessageSeparator = () <$ lift (A.word8 messageSeparator)
 parseChar :: Char -> Parser ()
 parseChar char = () <$ (lift . A.word8 . toEnum . fromEnum) char
 
-parseVerb :: String -> Parser ()
-parseVerb v = () <$ (lift . A.string . BS.pack . map (toEnum . fromEnum)) v
-
-parseComponent :: String -> Parser ()
-parseComponent = parseVerb
+parseLiteral :: String -> Parser ()
+parseLiteral v = () <$ (lift . A.string . BS.pack . map (toEnum . fromEnum)) v
 
 class Protocol a where
 	parse :: Parser a
+
+parseComponent :: Protocol a => Parser a
+parseComponent = parseComponentSeparator *> parse
+
+parse0 :: (                      ) => (          r) -> String -> Parser r
+parse1 :: (Protocol a            ) => (a      -> r) -> String -> Parser r
+parse2 :: (Protocol a, Protocol b) => (a -> b -> r) -> String -> Parser r
+parse3 ::
+	(Protocol a, Protocol b, Protocol c) =>
+	(a -> b -> c -> r) ->
+	String -> Parser r
+parse4 ::
+	(Protocol a, Protocol b, Protocol c, Protocol d) =>
+	(a -> b -> c -> d -> r) ->
+	String -> Parser r
+parse5 ::
+	(Protocol a, Protocol b, Protocol c, Protocol d, Protocol e) =>
+	(a -> b -> c -> d -> e -> r) ->
+	String -> Parser r
+
+parse0 constructor verb = constructor <$ parseLiteral verb
+parse1 constructor verb = constructor <$ parseLiteral verb <*> parseComponent
+parse2 constructor verb = constructor <$ parseLiteral verb <*> parseComponent <*> parseComponent
+parse3 constructor verb = constructor <$ parseLiteral verb <*> parseComponent <*> parseComponent <*> parseComponent
+parse4 constructor verb = constructor <$ parseLiteral verb <*> parseComponent <*> parseComponent <*> parseComponent <*> parseComponent
+parse5 constructor verb = constructor <$ parseLiteral verb <*> parseComponent <*> parseComponent <*> parseComponent <*> parseComponent <*> parseComponent
 
 instance Protocol Identifier where
 	parse = do
@@ -283,8 +305,7 @@ instance Protocol PillContent where
 instance Protocol Pill where
 	parse = do
 		p <- parse
-		parseComponentSeparator
-		c <- parse
+		c <- parseComponent
 		return Model.Pill { content = c, bottomLeftPosition = p }
 
 instance Protocol Board where
@@ -303,68 +324,45 @@ instance Protocol Board where
 
 instance Protocol StateRequestTime where
 	parse = asum
-		[ AtFrame <$ parseComponentSeparator <*> parse
-		, NextControlMode <$ parseComponentSeparator <* parseComponent "control"
-		, NextCleanupMode <$ parseComponentSeparator <* parseComponent "cleanup"
+		[ AtFrame <$> parseComponent
+		, NextControlMode <$ parseComponentSeparator <* parseLiteral "control"
+		, NextCleanupMode <$ parseComponentSeparator <* parseLiteral "cleanup"
 		, return Immediately
 		]
 
+instance Protocol a => Protocol [a] where
+	parse = many parse
+
+instance Protocol (Position, Cell) where
+	parse = liftA2 (,) parseComponent parseComponent
+
 instance Protocol ClientMessage where
 	parse = asum
-		[ do
-			parseVerb "control"
-			parseComponentSeparator
-			id <- parse
-			parseComponentSeparator
-			frame <- parse
-			parseComponentSeparator
-			bs <- many parse
-			return (Control id frame bs)
-		, do
-			parseVerb "debug"
-			pcs <- many $ do
-				parseComponentSeparator
-				p <- parse
-				parseComponentSeparator
-				c <- parse
-				return (p, c)
-			return (Debug pcs)
-		, do
-			parseVerb "queue"
-			parseComponentSeparator
-			id <- parse
-			parseComponentSeparator
-			bs <- many parse
-			return (Queue id bs)
-		, do
-			parseVerb "request-state"
-			RequestState <$> parse
-		, do
-			parseVerb "version"
-			parseComponentSeparator
-			Version <$> parse
+		[ parse3 Control "control"
+		, parse1 Debug "debug"
+		, parse2 Queue "queue"
+		, RequestState <$ parseLiteral "request-state" <*> parse
+		, parse1 Version "version"
 		] <* parseMessageSeparator
 
 instance Protocol ModeState where
 	parse = asum
-		[ CleanupState <$ parseComponent "cleanup"
-		, ControlState <$ parseComponent "control" <* parseComponentSeparator <*> parse <* parseComponentSeparator <*> parse
+		[ parse0 CleanupState "cleanup"
+		, parse2 ControlState "control"
 		]
 
 instance Protocol ServerMessage where
 	parse = asum
-		[ parseSingle AcceptControl "accept-control"
-		, parseSingle AcceptQueue "accept-queue"
-		, parseSingle FarControl "far-control"
-		, parseSingle FarState "far-state"
-		, parseSingle Frame "frame"
+		[ parse1 AcceptControl "accept-control"
+		, parse1 AcceptQueue "accept-queue"
+		, parse1 FarControl "far-control"
+		, parse1 FarState "far-state"
+		, parse1 Frame "frame"
 		, do
-			parseVerb "garbage"
-			parseComponentSeparator
-			player <- parse
+			parseLiteral "garbage"
+			player <- parseComponent
 			rawColumns <- lift (A.takeWhile (\w -> 48 <= w && w <= 55))
-			parseComponentSeparator
-			rawCells <- many parse
+			rawCells <- parseComponent
 			let columns = [fromIntegral (c - 48) | c <- BS.unpack rawColumns]
 			    garbagePairs =
 			    	[ (column, color)
@@ -381,58 +379,22 @@ instance Protocol ServerMessage where
 			           )
 			           (InvalidGarbageCorrected columns rawCells garbage)
 			return (Garbage player garbage)
-		, parseSingle Loser "loser"
+		, parse1 Loser "loser"
 		, do
-			parseVerb "mode"
-			parseComponentSeparator
-			player <- parse
+			parseLiteral "mode"
+			player <- parseComponent
 			parseComponentSeparator
 			asum
-				[ do
-					parseComponent "cleanup"
-					return (ModeCleanup player)
-				, do
-					parseComponent "control"
-					parseComponentSeparator
-					pill <- parse
-					return (ModeControl player pill)
+				[ parse0 (ModeCleanup player) "cleanup"
+				, parse1 (ModeControl player) "control"
 				]
-		, parseSingle OldControl "old-control"
-		, parseSingle OldState "old-state"
-		, do
-			parseVerb "pill"
-			parseComponentSeparator
-			player <- parse
-			parseComponentSeparator
-			pill <- parse
-			return (Pill player pill)
-		, parseSingle Players "players"
-		, parseSingle ProposeVersion "propose-version"
-		, RequestVersion <$ parseVerb "request-version"
-		, do
-			parseVerb "speed"
-			parseComponentSeparator
-			player <- parse
-			parseComponentSeparator
-			speed <- parse
-			return (Speed player speed)
-		, do
-			parseVerb "state"
-			parseComponentSeparator
-			player <- parse
-			parseComponentSeparator
-			dropFrames <- parse
-			parseComponentSeparator
-			pill <- parse
-			parseComponentSeparator
-			board <- parse
-			parseComponentSeparator
-			modeState <- parse
-			return (State player dropFrames pill board modeState)
-		, parseSingle Winner "winner"
+		, parse1 OldControl "old-control"
+		, parse1 OldState "old-state"
+		, parse2 Pill "pill"
+		, parse1 Players "players"
+		, parse1 ProposeVersion "propose-version"
+		, parse0 RequestVersion "request-version"
+		, parse2 Speed "speed"
+		, parse5 State "state"
+		, parse1 Winner "winner"
 		] <* parseMessageSeparator
-		where
-		parseSingle constructor verb = do
-			parseVerb verb
-			parseComponentSeparator
-			constructor <$> parse
