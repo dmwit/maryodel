@@ -247,8 +247,8 @@ that it makes sense to participate in this negotiation even when there is no
 version of the protocol that both the server and client can understand. All
 other messages&mdash;and even the structure of messages described
 above&mdash;are subject to radical modification in future versions of the
-protocol. This document describes version `0-statefix-oldfarfix` of the
-protocol.
+protocol. This document describes version `0-statefix-oldfarfix-boundfix` of
+the protocol.
 
 As mentioned in the overview, this document contains many example exchanges
 between a hypothetical server and client. These exchanges are prefaced by
@@ -269,7 +269,7 @@ receiving the message.
 An *integer* is a non-empty sequence of decimal digits (bytes 48-57) that
 
 * is either exactly the string `0` or does not begin with `0`, AND
-* falls in the range 0-2147483647 (2^32-1) when decoded.
+* falls in the range 0-4294967295 (2^32-1) when decoded.
 
 The decoding is done in the obvious way.
 
@@ -813,6 +813,12 @@ cleanup` message (for the fourth variant) or transition to the game\_setup
 state before the relevant `mode you` message.
 
 ## Changes
+
+### `0-statefix-oldfarfix` to `0-statefix-oldfarfix-boundfix`
+
+Previously, integers were specified with two incompatible upper bounds, namely,
+2147483647 and 2^32-1. The expanded decimal form of 2^32-1 has been corrected
+to 4294967295.
 
 ### `0-statefix` to `0-statefix-oldfarfix`
 

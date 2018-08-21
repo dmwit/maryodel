@@ -1,11 +1,7 @@
-{-# LANGUAGE BinaryLiterals #-}
-{-# LANGUAGE TypeFamilies #-}
-{-# LANGUAGE MultiParamTypeClasses #-}
-
 module Dr.Mario.Model
 	( Color(..)
 	, Shape(..)
-	, Cell(..), color
+	, Cell(..), color, shape
 	, Orientation(..)
 	, Position(..)
 	, Direction, left, right, down
@@ -27,30 +23,27 @@ module Dr.Mario.Model
 import Control.Applicative
 import Control.Monad
 import Control.Monad.ST
-import Data.Bits ((.&.), (.|.))
 import Data.Default.Class
 import Data.Foldable (toList)
 import Data.Map (Map)
-import Data.Primitive.ByteArray (setByteArray)
 import Data.Set (Set)
 import Data.Word
-import qualified Data.Map.Strict                  as Map
-import qualified Data.Set                         as S
-import qualified Data.Vector                      as V
-import qualified Data.Vector.Generic              as DVG
-import qualified Data.Vector.Generic.Mutable.Base as DVGMB
-import qualified Data.Vector.Primitive.Mutable    as DVPM
-import qualified Data.Vector.Unboxed              as U
-import qualified Data.Vector.Unboxed.Mutable      as M
-import qualified System.Console.ANSI              as ANSI
+import qualified Data.Map.Strict             as M
+import qualified Data.Set                    as S
+import qualified Data.Vector                 as V
+import qualified Data.Vector.Unboxed         as U
+import qualified Data.Vector.Unboxed.Mutable as MV
+import qualified System.Console.ANSI         as ANSI
 
-data Color = Red | Yellow | Blue deriving (Bounded, Enum, Eq, Ord, Read, Show)
-data Shape = Virus | Disconnected | North | South | East | West deriving (Bounded, Enum, Eq, Ord, Read, Show)
-data Cell = Empty | Occupied !Color !Shape deriving (Eq, Ord, Read, Show)
+import Dr.Mario.Model.Internal
 
 color :: Cell -> Maybe Color
 color (Occupied color shape) = Just color
 color Empty = Nothing
+
+shape :: Cell -> Maybe Shape
+shape (Occupied color shape) = Just shape
+shape Empty = Nothing
 
 data Orientation = Horizontal | Vertical deriving (Bounded, Enum, Eq, Ord, Read, Show)
 -- | Uses the math convention: the bottom of a 'Board' is at 'y'=0, the top at some positive 'y'.
@@ -72,76 +65,6 @@ otherPosition pill = unsafeMove dir pos where
 		Horizontal -> right
 		Vertical   -> up
 	pos = bottomLeftPosition pill
-
-data Board = Board
-	{ height :: !Int
-	, cells :: !(V.Vector (U.Vector Cell))
-	} deriving (Eq, Ord, Read, Show)
-
-{-# INLINE decodeCell #-}
-decodeCell :: Word8 -> Cell
-decodeCell 0xff = Empty
-decodeCell w = Occupied color shape where
-	color = case w .&. 0b11 of
-		0 -> Red
-		1 -> Yellow
-		_ -> Blue
-	shape = case w .&. 0b11100 of
-		0  -> Virus
-		4  -> Disconnected
-		8  -> North
-		12 -> South
-		16 -> East
-		_  -> West
-
-{-# INLINE encodeCell #-}
-encodeCell :: Cell -> Word8
-encodeCell Empty = 0xff
-encodeCell (Occupied color shape) = colorWord .|. shapeWord where
-	colorWord = case color of
-		Red    -> 0
-		Yellow -> 1
-		Blue   -> 2
-	shapeWord = case shape of
-		Virus        ->  0
-		Disconnected ->  4
-		North        ->  8
-		South        -> 12
-		East         -> 16
-		West         -> 20
-
-newtype instance U.MVector s Cell = MVCell (U.MVector s Word8)
-newtype instance U.Vector    Cell =  VCell (U.Vector    Word8)
-
-instance DVGMB.MVector U.MVector Cell where
-	{-# INLINE basicLength #-}
-	basicLength (MVCell v) = DVGMB.basicLength v
-	{-# INLINE basicUnsafeSlice #-}
-	basicUnsafeSlice i j (MVCell v) = MVCell (DVGMB.basicUnsafeSlice i j v)
-	{-# INLINE basicOverlaps #-}
-	basicOverlaps (MVCell v) (MVCell v') = DVGMB.basicOverlaps v v'
-	{-# INLINE basicUnsafeNew #-}
-	basicUnsafeNew n = MVCell <$> DVGMB.basicUnsafeNew n
-	{-# INLINE basicInitialize #-}
-	basicInitialize (MVCell (U.MV_Word8 (DVPM.MVector i n ba))) = setByteArray ba i n (encodeCell Empty)
-	{-# INLINE basicUnsafeRead #-}
-	basicUnsafeRead (MVCell v) i = decodeCell <$> DVGMB.basicUnsafeRead v i
-	{-# INLINE basicUnsafeWrite #-}
-	basicUnsafeWrite (MVCell v) i = DVGMB.basicUnsafeWrite v i . encodeCell
-
-instance DVG.Vector U.Vector Cell where
-	{-# INLINE basicUnsafeFreeze #-}
-	basicUnsafeFreeze (MVCell v) = VCell <$> DVG.basicUnsafeFreeze v
-	{-# INLINE basicUnsafeThaw #-}
-	basicUnsafeThaw (VCell v) = MVCell <$> DVG.basicUnsafeThaw v
-	{-# INLINE basicLength #-}
-	basicLength (VCell v) = DVG.basicLength v
-	{-# INLINE basicUnsafeSlice #-}
-	basicUnsafeSlice i j (VCell v) = VCell (DVG.basicUnsafeSlice i j v)
-	{-# INLINE basicUnsafeIndexM #-}
-	basicUnsafeIndexM (VCell v) i = decodeCell <$> DVG.basicUnsafeIndexM v i
-
-instance U.Unbox Cell
 
 perpendicular :: Orientation -> Orientation
 perpendicular Horizontal = Vertical
@@ -350,14 +273,14 @@ place board pill = case (placementValid, fastPathValid) of
 -- colors given by the values. Returns 'Nothing' if any column is out of
 -- bounds.
 garbage :: Board -> Map Int Color -> Maybe Board
-garbage board pieces | Map.size pieces <= 0 = return board -- uh...
+garbage board pieces | M.size pieces <= 0 = return board -- uh...
 garbage board pieces = do
-	let (x , _) = Map.findMin pieces
-	    (x', _) = Map.findMax pieces
+	let (x , _) = M.findMin pieces
+	    (x', _) = M.findMax pieces
 	guard (x >= 0 && x' < width board)
 	return $ runST $ do
 		mb <- thaw board
-		ps <- Map.traverseWithKey (go mb) pieces
+		ps <- M.traverseWithKey (go mb) pieces
 		unsafeDropAndClear mb ps
 		munsafeFreeze mb
 	where
@@ -368,14 +291,14 @@ garbage board pieces = do
 
 data MBoard s = MBoard
 	{ mwidth, mheight :: !Int
-	, mcells :: !(M.MVector s Cell)
+	, mcells :: !(MV.MVector s Cell)
 	}
 
 memptyBoard
 	:: Int -- ^ width
 	-> Int -- ^ height
 	-> ST s (MBoard s)
-memptyBoard w h = MBoard w h <$> M.new (w*h)
+memptyBoard w h = MBoard w h <$> MV.new (w*h)
 
 thaw :: Board -> ST s (MBoard s)
 thaw board = do
@@ -407,7 +330,7 @@ mfreeze MBoard { mwidth = w, mheight = h, mcells = mcs } = do
 
 -- | Doesn't do bounds checking.
 munsafeGet :: MBoard s -> Position -> ST s Cell
-munsafeGet mb p = M.unsafeRead (mcells mb) (x p * mheight mb + y p)
+munsafeGet mb p = MV.unsafeRead (mcells mb) (x p * mheight mb + y p)
 
 mget :: MBoard s -> Position -> ST s (Maybe Cell)
 mget mb p
@@ -417,7 +340,7 @@ mget mb p
 -- | Doesn't do bounds checking, and doesn't promise anything about clears or
 -- gravity.
 munsafeSet :: MBoard s -> Position -> Cell -> ST s ()
-munsafeSet mb p c = M.unsafeWrite (mcells mb) (x p * mheight mb + y p) c
+munsafeSet mb p c = MV.unsafeWrite (mcells mb) (x p * mheight mb + y p) c
 
 -- | Out-of-bounds writes are silently discarded. Doesn't promise anything
 -- about clears or gravity.
@@ -431,8 +354,8 @@ mset mb p cell
 -- Doesn't do bounds checking or promise anything about clears or gravity.
 munsafeModify :: MBoard s -> Position -> (Cell -> Cell) -> ST s Cell
 munsafeModify mb p f = do
-	c <- M.unsafeRead v i
-	M.unsafeWrite v i (f c)
+	c <- MV.unsafeRead v i
+	MV.unsafeWrite v i (f c)
 	return c
 	where
 	v = mcells mb
