@@ -192,11 +192,10 @@ instance Protocol Position where
 		y_ <- parse
 		let x = fromIntegral (x_ `mod` xMax)
 		    y = fromIntegral (y_ `mod` yMax)
-		complainIf (x>=xMax) (XPositionOverflowed x_ x)
-		complainIf (y>=yMax) (YPositionOverflowed y_ y)
+		complainIf (x_>=xMax) (XPositionOverflowed x_ x)
+		complainIf (y_>=yMax) (YPositionOverflowed y_ y)
 		return (Position x y)
 		where
-		xMax, yMax :: Num a => a
 		xMax = 8
 		yMax = 16
 
