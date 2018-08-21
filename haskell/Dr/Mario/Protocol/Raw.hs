@@ -330,7 +330,23 @@ instance Protocol StateRequestTime where
 		, return Immediately
 		]
 
-instance Protocol a => Protocol [a] where
+-- | Only certain instances @X@ of 'Protocol' should be promotable to @[X]@
+-- instances of 'Protocol'. In particular, we shouldn't double-promote from @X@
+-- to @[[X]]@, since then we'd be nesting calls to 'many' which is unsafe for
+-- attoparsec parsers.
+--
+-- This also gives a little bit of safety: we only include 'Repeatable'
+-- instances when the repetition of a type's protocol format is clearly
+-- splittable in the right way, which helps us catch type errors if we try to
+-- parse a list using 'parse' for an unintended type.
+--
+-- You should not create instances of 'Repeatable' yourself.
+class Repeatable a
+instance Repeatable Cell
+instance Repeatable ButtonPress
+instance Repeatable (Position, Cell)
+
+instance (Protocol a, Repeatable a) => Protocol [a] where
 	parse = many parse
 
 instance Protocol (Position, Cell) where
