@@ -1,16 +1,21 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE BinaryLiterals #-}
 module Dr.Mario.Protocol.Raw
-	( Identifier, identifier, unsafeIdentifier, getIdentifier
+	( -- * 'ByteString' conversions
+      Protocol(..), Parser, ParseWarning(..), Printer, PrintWarning(..)
+	  -- * Messages
+	, ServerMessage(..), ClientMessage(..)
+      -- * 'Identifier's
+	, Identifier, identifier, unsafeIdentifier, getIdentifier
 	, PlayerIdentifier, playerIdentifier, you
 	, protocolVersion
 	, maxIdentifierLength, messageSeparator, componentSeparator
+	  -- * Other supporting types
+	, ModeState(..)
+	, StateRequestTime(..)
 	, Button(..)
 	, ButtonAction(..)
 	, ButtonPress(..)
-	, ServerMessage(..), ModeState(..)
-	, ClientMessage(..), StateRequestTime(..)
-	, Protocol(..), Parser, ParseWarning(..)
 	) where
 
 import Control.Applicative
@@ -18,20 +23,24 @@ import Control.Monad
 import Control.Monad.Writer
 import Data.Bits
 import Data.ByteString (ByteString)
+import Data.ByteString.Builder (Builder)
 import Data.List (transpose)
 import Data.Foldable
 import Data.Map (Map)
+import Data.Maybe
 import Data.Word
 import qualified Data.Attoparsec.ByteString as A
 import qualified Data.ByteString as BS
+import qualified Data.ByteString.Builder as B
 import qualified Data.Map.Strict as M
 import qualified Data.Vector         as V
 import qualified Data.Vector.Unboxed as U
 
--- Only skip the Pill data constructor that conflicts with ServerMessage(Pill)
--- (but still import the Pill type constructor); then we'll import that data
--- constructor qualified below so we can still use it if we need to.
-import Dr.Mario.Model hiding (Pill(Pill))
+-- Only skip pp and the Pill data constructor that conflicts with
+-- ServerMessage(Pill) (but still import the Pill type constructor); then we'll
+-- import that data constructor qualified below so we can still use it if we
+-- need to.
+import Dr.Mario.Model hiding (Pill(Pill), pp)
 import Dr.Mario.Model (Pill)
 import Dr.Mario.Model.Internal
 import qualified Dr.Mario.Model as Model
@@ -158,11 +167,11 @@ data ParseWarning
 
 type Parser = WriterT [ParseWarning] A.Parser
 
-complain :: ParseWarning -> Parser ()
-complain = tell . (:[])
+complainParser :: ParseWarning -> Parser ()
+complainParser = tell . (:[])
 
-complainIf :: Bool -> ParseWarning -> Parser ()
-complainIf p w = when p (complain w)
+complainIfParser :: Bool -> ParseWarning -> Parser ()
+complainIfParser p w = when p (complainParser w)
 
 parseComponentSeparator :: Parser ()
 parseComponentSeparator = () <$ lift (A.word8 componentSeparator)
@@ -176,8 +185,67 @@ parseChar char = () <$ (lift . A.word8 . toEnum . fromEnum) char
 parseLiteral :: String -> Parser ()
 parseLiteral v = () <$ (lift . A.string . BS.pack . map (toEnum . fromEnum)) v
 
+-- | Some instances of 'Protocol' are capable of holding invalid values
+-- (notably 'Position's and garbage). 'Printer's do their best to handle these
+-- invalid values, and always produce something that is valid within the
+-- protocol anyway. When they do this, they report some information about the
+-- invalid value they saw and their guess about what a reasonable corresponding
+-- valid value to send would be. In each constructor, invalid values come
+-- first, and the corrected values come last.
+--
+-- Some messages are variable-length, and these messages have length limits
+-- imposed by the protocol. It is allowed to violate these limits, but servers
+-- may ignore parts of the message that extend beyond the limit. In such cases,
+-- the 'Printer' produces messages that exceed the limits and emits a warning
+-- containing the longest prefix of the data that the server is guaranteed to
+-- use.
+--
+-- Your application should strive to never pass 'Printer's values which produce
+-- warnings.
+data PrintWarning
+	= XPositionWrapped !Int !Word32
+	| YPositionWrapped !Int !Word32
+	| WrongBoardSizeCorrected !Board -- TODO: report something about the corrected value (maybe report a corrected Board?)
+	| LongButtonPressSequenceRetained [ButtonPress] [ButtonPress]
+	-- For simplicity, PossiblyLongDebugSequenceRetained just reports the long
+	-- debug sequence, not the guaranteed-received prefix, and may sometimes
+	-- give a false positive for messages near the limit.
+	-- TODO: Eliminate false positives, and report the actual guaranteed-received prefix.
+	| PossiblyLongDebugSequenceRetained [(Position, Cell)]
+	| OutOfBoundsGarbageIgnored !(Map Int Color) !(Map Int Color)
+	deriving (Eq, Ord, Read, Show)
+
+-- PrintResult is not exported, so only use it in the type signatures of values that aren't exported.
+type PrintResult = ([PrintWarning], Builder)
+type Printer a = a -> ([PrintWarning], Builder)
+
+liftPP :: Printer Builder
+liftPP b = ([], b)
+
+-- Could give it the type Printer PrintWarning, but that would really give the
+-- wrong impression, since the warning doesn't get put in the "printing" part
+-- but in the "warning" part.
+complainPrinter :: PrintWarning -> PrintResult
+complainPrinter w = ([w], mempty)
+
+complainIfPrinter :: Bool -> PrintWarning -> PrintResult
+complainIfPrinter b w = ([w | b], mempty)
+
+ppComponentSeparator :: PrintResult
+ppComponentSeparator = liftPP . B.word8 $ componentSeparator
+
+ppMessageSeparator :: PrintResult
+ppMessageSeparator = liftPP . B.word8 $ messageSeparator
+
+ppChar :: Printer Char
+ppChar = liftPP . B.word8 . toEnum . fromEnum
+
+ppLiteral :: Printer String
+ppLiteral = foldMap ppChar
+
 class Protocol a where
 	parse :: Parser a
+	pp :: Printer a
 
 parseComponent :: Protocol a => Parser a
 parseComponent = parseComponentSeparator *> parse
@@ -205,37 +273,88 @@ parse3 constructor verb = constructor <$ parseLiteral verb <*> parseComponent <*
 parse4 constructor verb = constructor <$ parseLiteral verb <*> parseComponent <*> parseComponent <*> parseComponent <*> parseComponent
 parse5 constructor verb = constructor <$ parseLiteral verb <*> parseComponent <*> parseComponent <*> parseComponent <*> parseComponent <*> parseComponent
 
+ppComponent :: Protocol a => Printer a
+ppComponent a = ppComponentSeparator <> pp a
+
+pp0 :: (                      ) => String ->           PrintResult
+pp1 :: (Protocol a            ) => String -> a ->      PrintResult
+pp2 :: (Protocol a, Protocol b) => String -> a -> b -> PrintResult
+pp3 ::
+	(Protocol a, Protocol b, Protocol c) =>
+	String ->
+	a -> b -> c ->
+	PrintResult
+pp4 ::
+	(Protocol a, Protocol b, Protocol c, Protocol d) =>
+	String ->
+	a -> b -> c -> d ->
+	PrintResult
+pp5 ::
+	(Protocol a, Protocol b, Protocol c, Protocol d, Protocol e) =>
+	String ->
+	a -> b -> c -> d -> e ->
+	PrintResult
+
+pp0 verb           = ppLiteral verb
+pp1 verb a         = ppLiteral verb <> ppComponent a
+pp2 verb a b       = ppLiteral verb <> ppComponent a <> ppComponent b
+pp3 verb a b c     = ppLiteral verb <> ppComponent a <> ppComponent b <> ppComponent c
+pp4 verb a b c d   = ppLiteral verb <> ppComponent a <> ppComponent b <> ppComponent c <> ppComponent d
+pp5 verb a b c d e = ppLiteral verb <> ppComponent a <> ppComponent b <> ppComponent c <> ppComponent d <> ppComponent e
+
 instance Protocol Identifier where
 	parse = do
 		bs <- lift $ A.takeWhile (\c -> c /= messageSeparator && c /= componentSeparator)
 		let ident = Identifier (BS.take 40 bs)
-		complainIf (BS.length bs > maxIdentifierLength)
-		           (TruncatedLongIdentifier bs ident)
+		complainIfParser
+			(BS.length bs > maxIdentifierLength)
+			(TruncatedLongIdentifier bs ident)
 		return ident
+
+	pp (Identifier bs) = liftPP $ B.byteString bs
 
 instance Protocol Word32 where
 	parse = do
 		digits <- lift (A.takeWhile1 (\c -> 48 <= c && c <= 57) A.<?> "decimal digits")
-		complainIf (BS.length digits > 1 && BS.head digits == 48)
-		           (IgnoredLeadingZeros digits)
+		complainIfParser
+			(BS.length digits > 1 && BS.head digits == 48)
+			(IgnoredLeadingZeros digits)
 		let integer = BS.foldl' (\n digit -> n*10 + toInteger digit - 48) 0 digits
 		    word32 = fromInteger integer
-		complainIf (integer >= 2^32) (IntegerOverflowed integer word32)
+		complainIfParser (integer >= 2^32) (IntegerOverflowed integer word32)
 		return word32
+
+	pp 0 = liftPP $ B.word8 48
+	pp n = liftPP $ go n where
+		go 0 = mempty
+		go n = let (q, r) = quotRem n 10 in go q <> B.word8 (48 + fromIntegral r)
+
+xSize, ySize :: Num a => a
+xSize = 8
+ySize = 16
 
 instance Protocol Position where
 	parse = do
 		x_ <- parse
 		parseComponentSeparator
 		y_ <- parse
-		let x = fromIntegral (x_ `mod` xMax)
-		    y = fromIntegral (y_ `mod` yMax)
-		complainIf (x_>=xMax) (XPositionOverflowed x_ x)
-		complainIf (y_>=yMax) (YPositionOverflowed y_ y)
+		let x = fromIntegral (x_ `mod` xSize)
+		    y = fromIntegral (y_ `mod` ySize)
+		complainIfParser (x_>=xSize) (XPositionOverflowed x_ x)
+		complainIfParser (y_>=ySize) (YPositionOverflowed y_ y)
 		return (Position x y)
+
+	pp (Position x__ y__)
+		=  complainIfPrinter (x__/=x_) (XPositionWrapped x__ x)
+		<> complainIfPrinter (y__/=y_) (YPositionWrapped y__ y)
+		<> pp x
+		<> ppComponentSeparator
+		<> pp y
 		where
-		xMax = 8
-		yMax = 16
+		x_ = x__ `mod` xSize
+		y_ = y__ `mod` ySize
+		x = fromIntegral x_
+		y = fromIntegral y_
 
 instance Protocol Button where
 	parse = asum
@@ -246,6 +365,12 @@ instance Protocol Button where
 		, B <$ parseChar 'b'
 		]
 
+	pp L = ppChar 'l'
+	pp R = ppChar 'r'
+	pp D = ppChar 'd'
+	pp A = ppChar 'a'
+	pp B = ppChar 'b'
+
 instance Protocol ButtonAction where
 	parse = asum
 		[ Close <$ parseChar '+'
@@ -253,8 +378,13 @@ instance Protocol ButtonAction where
 		, return Toggle
 		]
 
+	pp Close  = ppChar '+'
+	pp Open   = ppChar '-'
+	pp Toggle = mempty
+
 instance Protocol (Button, ButtonAction) where
 	parse = liftA2 (flip (,)) parse parse
+	pp (b, a) = pp a <> pp b
 
 instance Protocol ButtonPress where
 	parse = (ButtonPress . uncurry M.singleton <$> parse) <|> do
@@ -263,9 +393,15 @@ instance Protocol ButtonPress where
 		parseChar ')'
 		let atomicButtonPresses = M.fromList ps
 		    buttonPress = ButtonPress atomicButtonPresses
-		complainIf (not . null . drop (length atomicButtonPresses) $ ps)
-		           (AtomicButtonPressesIgnored ps buttonPress)
+		complainIfParser
+			(not . null . drop (length atomicButtonPresses) $ ps)
+			(AtomicButtonPressesIgnored ps buttonPress)
 		return buttonPress
+
+	pp (ButtonPress ps)
+		=  (if M.size ps == 1 then mempty else ppChar '(')
+		<> foldMap pp (M.toList ps)
+		<> (if M.size ps == 1 then mempty else ppChar ')')
 
 instance Protocol Cell where
 	parse = do
@@ -285,6 +421,21 @@ instance Protocol Cell where
 			100 -> Empty
 			_ -> Occupied color shape
 
+	pp Empty = liftPP (B.word8 100)
+	pp (Occupied color shape) = liftPP . B.word8 $ upperBits .|. colorBits .|. shapeBits where
+		upperBits = 96
+		colorBits = case color of
+			Red    -> 1
+			Yellow -> 2
+			Blue   -> 3
+		shapeBits = case shape of
+			Virus        ->  0
+			Disconnected ->  4
+			South        ->  8
+			North        -> 12
+			West         -> 16
+			East         -> 20
+
 instance Protocol PillContent where
 	parse = do
 		bottomLeft <- parse
@@ -302,11 +453,22 @@ instance Protocol PillContent where
 				}
 			_ -> fail "expected a pill, but saw two cells with empty or mismatched shapes"
 
+	pp pc =  pp (Occupied (bottomLeftColor pc) bottomLeftShape)
+	      <> pp (Occupied (     otherColor pc)      otherShape)
+		where
+		(bottomLeftShape, otherShape) = case orientation pc of
+			Horizontal -> (West , East )
+			Vertical   -> (South, North)
+
 instance Protocol Pill where
 	parse = do
 		p <- parse
 		c <- parseComponent
 		return Model.Pill { content = c, bottomLeftPosition = p }
+
+	pp (Model.Pill { content = c, bottomLeftPosition = p })
+		=  pp p
+		<> ppComponent c
 
 instance Protocol Board where
 	parse = do
@@ -316,11 +478,22 @@ instance Protocol Board where
 		-- efficient? Or maybe construct an MBoard and freeze it so that we can
 		-- just walk the list once and do bit manipulations to get the right
 		-- index into the mutable vector?
-		cs <- transpose . reverse <$> replicateM 16 (replicateM 8 parse)
+		cs <- transpose . reverse <$> replicateM ySize (replicateM xSize parse)
 		return Board
-			{ height = 16
-			, cells = V.fromListN 8 (map (U.fromListN 16) cs)
+			{ height = ySize
+			, cells = V.fromListN xSize (map (U.fromListN ySize) cs)
 			}
+
+	pp board
+		= complainIfPrinter
+			(width board /= xSize || height board /= ySize)
+			(WrongBoardSizeCorrected board)
+		<> go 0 (ySize-1)
+		where
+		go x y
+			| x == xSize && y == 0 = mempty
+			| x == xSize = go 0 (y-1)
+			| otherwise = pp (fromMaybe Empty (get board (Position x y))) <> go (x+1) y
 
 instance Protocol StateRequestTime where
 	parse = asum
@@ -329,6 +502,11 @@ instance Protocol StateRequestTime where
 		, NextCleanupMode <$ parseComponentSeparator <* parseLiteral "cleanup"
 		, return Immediately
 		]
+
+	pp (AtFrame n) = ppComponent n
+	pp NextControlMode = ppComponentSeparator <> ppLiteral "control"
+	pp NextCleanupMode = ppComponentSeparator <> ppLiteral "cleanup"
+	pp Immediately = mempty
 
 -- | Only certain instances @X@ of 'Protocol' should be promotable to @[X]@
 -- instances of 'Protocol'. In particular, we shouldn't double-promote from @X@
@@ -345,12 +523,22 @@ class Repeatable a
 instance Repeatable Cell
 instance Repeatable ButtonPress
 instance Repeatable (Position, Cell)
+instance Repeatable ClientMessage
+instance Repeatable ServerMessage
 
 instance (Protocol a, Repeatable a) => Protocol [a] where
 	parse = many parse
+	pp xs = foldMap pp xs
 
 instance Protocol (Position, Cell) where
 	parse = liftA2 (,) parseComponent parseComponent
+	pp (p, c) = ppComponent p <> ppComponent c
+
+buttonPressSize :: Int
+buttonPressSize = 624
+
+messageSize :: Int
+messageSize = 8192
 
 instance Protocol ClientMessage where
 	parse = asum
@@ -361,11 +549,33 @@ instance Protocol ClientMessage where
 		, parse1 Version "version"
 		] <* parseMessageSeparator
 
+	pp m = go m <> ppMessageSeparator where
+		go (Control ident frame buttons)
+			=  complainIfPrinter
+				(length buttons > buttonPressSize)
+				(LongButtonPressSequenceRetained buttons (take buttonPressSize buttons))
+			<> pp3 "control" ident frame buttons
+		go (Debug pcs)
+			= complainIfPrinter
+				(length pcs >= (messageSize - length "debug ") `div` length " 7 15 a")
+				(PossiblyLongDebugSequenceRetained pcs)
+			<> pp1 "debug" pcs
+		go (Queue ident buttons)
+			= complainIfPrinter
+				(length buttons > buttonPressSize)
+				(LongButtonPressSequenceRetained buttons (take buttonPressSize buttons))
+			<> pp2 "queue" ident buttons
+		go (RequestState time) = ppLiteral "request-state" <> pp time
+		go (Version v) = pp1 "version" v
+
 instance Protocol ModeState where
 	parse = asum
 		[ parse0 CleanupState "cleanup"
 		, parse2 ControlState "control"
 		]
+
+	pp CleanupState = pp0 "cleanup"
+	pp (ControlState frames pill) = pp2 "control" frames pill
 
 instance Protocol ServerMessage where
 	parse = asum
@@ -377,6 +587,7 @@ instance Protocol ServerMessage where
 		, do
 			parseLiteral "garbage"
 			player <- parseComponent
+			parseComponentSeparator
 			rawColumns <- lift (A.takeWhile (\w -> 48 <= w && w <= 55))
 			rawCells <- parseComponent
 			let columns = [fromIntegral (c - 48) | c <- BS.unpack rawColumns]
@@ -389,11 +600,12 @@ instance Protocol ServerMessage where
 			    numColumns = BS.length rawColumns
 			    cellInvalid cell = shape cell /= Just Disconnected
 			    garbage = M.fromList garbagePairs
-			complainIf (  numColumns /= numCells
-			           || numColumns /= length garbage
-			           || any cellInvalid rawCells
-			           )
-			           (InvalidGarbageCorrected columns rawCells garbage)
+			complainIfParser
+				(  numColumns /= numCells
+				|| numColumns /= length garbage
+				|| any cellInvalid rawCells
+				)
+				(InvalidGarbageCorrected columns rawCells garbage)
 			return (Garbage player garbage)
 		, parse1 Loser "loser"
 		, do
@@ -414,3 +626,33 @@ instance Protocol ServerMessage where
 		, parse5 State "state"
 		, parse1 Winner "winner"
 		] <* parseMessageSeparator
+
+	pp m = go m <> ppMessageSeparator where
+		go (AcceptControl ident) = pp1 "accept-control" ident
+		go (AcceptQueue ident) = pp1 "accept-queue" ident
+		go (FarControl ident) = pp1 "far-control" ident
+		go (FarState n) = pp1 "far-state" n
+		go (Frame n) = pp1 "frame" n
+		go (Garbage player garbage_)
+			=  complainIfPrinter
+				(M.size garbage_ /= M.size garbage)
+				(OutOfBoundsGarbageIgnored garbage_ garbage)
+			<> pp1 "garbage" player
+			<> ppComponentSeparator
+			<> M.foldMapWithKey (\column _ -> pp (fromIntegral column :: Word32)) garbage
+			<> ppComponentSeparator
+			<> M.foldMapWithKey (\_ color -> pp (Occupied color Disconnected)) garbage
+			where
+			garbage = M.takeWhileAntitone (xSize>) . M.dropWhileAntitone (0>) $ garbage_
+		go (Loser player) = pp1 "loser" player
+		go (ModeCleanup player) = pp1 "mode" player <> ppComponentSeparator <> pp0 "cleanup"
+		go (ModeControl player pill) = pp1 "mode" player <> ppComponentSeparator <> pp1 "control" pill
+		go (OldControl ident) = pp1 "old-control" ident
+		go (OldState n) = pp1 "old-state" n
+		go (Pill player pill) = pp2 "pill" player pill
+		go (Players n) = pp1 "players" n
+		go (ProposeVersion ident) = pp1 "propose-version" ident
+		go (RequestVersion) = pp0 "request-version"
+		go (Speed player n) = pp2 "speed" player n
+		go (State player dropFrames pill board modeState) = pp5 "state" player dropFrames pill board modeState
+		go (Winner player) = pp1 "winner" player
