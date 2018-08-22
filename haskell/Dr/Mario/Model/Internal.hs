@@ -7,9 +7,11 @@ module Dr.Mario.Model.Internal
 	, Shape(..)
 	, Cell(..)
 	, Board(..)
+	, emptyBoard
 	) where
 
 import Data.Bits
+import Data.Default.Class
 import Data.Primitive.ByteArray (setByteArray)
 import Data.Word
 import qualified Data.Vector                      as V
@@ -91,3 +93,11 @@ data Board = Board
 	{ height :: !Int
 	, cells :: !(V.Vector (U.Vector Cell))
 	} deriving (Eq, Ord, Read, Show)
+
+emptyBoard
+	:: Int -- ^ width
+	-> Int -- ^ height
+	-> Board
+emptyBoard w h = Board h (V.replicate w (U.replicate h Empty))
+
+instance Default Board where def = emptyBoard 8 16

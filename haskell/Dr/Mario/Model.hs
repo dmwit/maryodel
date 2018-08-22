@@ -23,7 +23,6 @@ module Dr.Mario.Model
 import Control.Applicative
 import Control.Monad
 import Control.Monad.ST
-import Data.Default.Class
 import Data.Foldable (toList)
 import Data.Map (Map)
 import Data.Set (Set)
@@ -78,14 +77,6 @@ down  = Direction   0 (-1)
 
 width :: Board -> Int
 width = V.length . cells
-
-emptyBoard
-	:: Int -- ^ width
-	-> Int -- ^ height
-	-> Board
-emptyBoard w h = Board h (V.replicate w (U.replicate h Empty))
-
-instance Default Board where def = emptyBoard 8 16
 
 get :: Board -> Position -> Maybe Cell
 get b p = (V.!? x p) >=> (U.!? y p) $ cells b
