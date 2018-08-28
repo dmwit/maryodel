@@ -353,8 +353,7 @@ ySize = 16
 instance Protocol Position where
 	parseT = do
 		x_ <- parseT
-		parseComponentSeparator
-		y_ <- parseT
+		y_ <- parseComponent
 		let x = fromIntegral (x_ `mod` xSize)
 		    y = fromIntegral (y_ `mod` ySize)
 		complainIfParser (x_>=xSize) (XPositionOverflowed x_ x)
