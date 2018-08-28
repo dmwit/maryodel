@@ -2,20 +2,26 @@
 {-# LANGUAGE BinaryLiterals #-}
 module Dr.Mario.Protocol.Raw
 	( -- * 'ByteString' conversions
-      Protocol(..), Parser, ParseWarning(..), Printer, PrintWarning(..)
+      Protocol(..), Parser, parse, ParseWarning(..), Printer, PrintWarning(..)
 	  -- * Messages
 	, ServerMessage(..), ClientMessage(..)
       -- * 'Identifier's
 	, Identifier, identifier, unsafeIdentifier, getIdentifier
 	, PlayerIdentifier, playerIdentifier, you
 	, protocolVersion
-	, maxIdentifierLength, messageSeparator, componentSeparator
+	, messageSeparator, componentSeparator
+	  -- * Limits
+	, identifierSize
+	, buttonPressSize
+	, messageSize
+	, xSize, ySize
 	  -- * Other supporting types
 	, ModeState(..)
 	, StateRequestTime(..)
 	, Button(..)
 	, ButtonAction(..)
 	, ButtonPress(..)
+	, Word32
 	) where
 
 import Control.Applicative
@@ -53,8 +59,9 @@ newtype Identifier = Identifier { _getIdentifier :: ByteString }
 -- | An 'Identifier' where the bytes for @"you"@ are considered special.
 type PlayerIdentifier = Identifier
 
-maxIdentifierLength :: Int
-maxIdentifierLength = 40
+-- | The maximum length for 'Identifier's.
+identifierSize :: Int
+identifierSize = 40
 
 messageSeparator, componentSeparator :: Word8
 messageSeparator = 10
@@ -63,7 +70,7 @@ componentSeparator = 32
 -- | Returns nothing if the 'ByteString' is too long or has invalid bytes.
 identifier :: ByteString -> Maybe Identifier
 identifier bs = do
-	guard (BS.length bs <= maxIdentifierLength)
+	guard (BS.length bs <= identifierSize)
 	guard (messageSeparator   `BS.notElem` bs)
 	guard (componentSeparator `BS.notElem` bs)
 	return (Identifier bs)
@@ -244,11 +251,14 @@ ppLiteral :: Printer String
 ppLiteral = foldMap ppChar
 
 class Protocol a where
-	parse :: Parser a
+	parseT :: Parser a
 	pp :: Printer a
 
+parse :: Protocol a => A.Parser (a, [ParseWarning])
+parse = runWriterT parseT
+
 parseComponent :: Protocol a => Parser a
-parseComponent = parseComponentSeparator *> parse
+parseComponent = parseComponentSeparator *> parseT
 
 parse0 :: (                      ) => (          r) -> String -> Parser r
 parse1 :: (Protocol a            ) => (a      -> r) -> String -> Parser r
@@ -303,18 +313,18 @@ pp4 verb a b c d   = ppLiteral verb <> ppComponent a <> ppComponent b <> ppCompo
 pp5 verb a b c d e = ppLiteral verb <> ppComponent a <> ppComponent b <> ppComponent c <> ppComponent d <> ppComponent e
 
 instance Protocol Identifier where
-	parse = do
+	parseT = do
 		bs <- lift $ A.takeWhile (\c -> c /= messageSeparator && c /= componentSeparator)
 		let ident = Identifier (BS.take 40 bs)
 		complainIfParser
-			(BS.length bs > maxIdentifierLength)
+			(BS.length bs > identifierSize)
 			(TruncatedLongIdentifier bs ident)
 		return ident
 
 	pp (Identifier bs) = liftPP $ B.byteString bs
 
 instance Protocol Word32 where
-	parse = do
+	parseT = do
 		digits <- lift (A.takeWhile1 (\c -> 48 <= c && c <= 57) A.<?> "decimal digits")
 		complainIfParser
 			(BS.length digits > 1 && BS.head digits == 48)
@@ -329,15 +339,22 @@ instance Protocol Word32 where
 		go 0 = mempty
 		go n = let (q, r) = quotRem n 10 in go q <> B.word8 (48 + fromIntegral r)
 
-xSize, ySize :: Num a => a
+-- | In the current version of the protocol, boards always have exactly the
+-- same size.
+xSize :: Num a => a
+
+-- | In the current version of the protocol, boards always have exactly the
+-- same size.
+ySize :: Num a => a
+
 xSize = 8
 ySize = 16
 
 instance Protocol Position where
-	parse = do
-		x_ <- parse
+	parseT = do
+		x_ <- parseT
 		parseComponentSeparator
-		y_ <- parse
+		y_ <- parseT
 		let x = fromIntegral (x_ `mod` xSize)
 		    y = fromIntegral (y_ `mod` ySize)
 		complainIfParser (x_>=xSize) (XPositionOverflowed x_ x)
@@ -357,7 +374,7 @@ instance Protocol Position where
 		y = fromIntegral y_
 
 instance Protocol Button where
-	parse = asum
+	parseT = asum
 		[ L <$ parseChar 'l'
 		, R <$ parseChar 'r'
 		, D <$ parseChar 'd'
@@ -372,7 +389,7 @@ instance Protocol Button where
 	pp B = ppChar 'b'
 
 instance Protocol ButtonAction where
-	parse = asum
+	parseT = asum
 		[ Close <$ parseChar '+'
 		, Open  <$ parseChar '-'
 		, return Toggle
@@ -383,13 +400,13 @@ instance Protocol ButtonAction where
 	pp Toggle = mempty
 
 instance Protocol (Button, ButtonAction) where
-	parse = liftA2 (flip (,)) parse parse
+	parseT = liftA2 (flip (,)) parseT parseT
 	pp (b, a) = pp a <> pp b
 
 instance Protocol ButtonPress where
-	parse = (ButtonPress . uncurry M.singleton <$> parse) <|> do
+	parseT = (ButtonPress . uncurry M.singleton <$> parseT) <|> do
 		parseChar '('
-		ps <- many parse
+		ps <- many parseT
 		parseChar ')'
 		let atomicButtonPresses = M.fromList ps
 		    buttonPress = ButtonPress atomicButtonPresses
@@ -404,7 +421,7 @@ instance Protocol ButtonPress where
 		<> (if M.size ps == 1 then mempty else ppChar ')')
 
 instance Protocol Cell where
-	parse = do
+	parseT = do
 		w <- lift (A.satisfy (\w -> 97 <= w && w <= 119 && w `notElem` [104,108,112,116]))
 		let color = case w .&. 0b11 of
 		    	1 -> Red
@@ -437,9 +454,9 @@ instance Protocol Cell where
 			East         -> 20
 
 instance Protocol PillContent where
-	parse = do
-		bottomLeft <- parse
-		otherPosition <- parse
+	parseT = do
+		bottomLeft <- parseT
+		otherPosition <- parseT
 		case (bottomLeft, otherPosition) of
 			(Occupied blc South, Occupied opc North) -> return PillContent
 				{ orientation = Vertical
@@ -461,8 +478,8 @@ instance Protocol PillContent where
 			Vertical   -> (South, North)
 
 instance Protocol Pill where
-	parse = do
-		p <- parse
+	parseT = do
+		p <- parseT
 		c <- parseComponent
 		return Model.Pill { content = c, bottomLeftPosition = p }
 
@@ -471,14 +488,14 @@ instance Protocol Pill where
 		<> ppComponent c
 
 instance Protocol Board where
-	parse = do
+	parseT = do
 		-- TODO: Ouch. These list manipulations are due to the protocol being
 		-- row-major order and the model being column-major order. Should we
 		-- change the internal representation of the model to make this more
 		-- efficient? Or maybe construct an MBoard and freeze it so that we can
 		-- just walk the list once and do bit manipulations to get the right
 		-- index into the mutable vector?
-		cs <- transpose . reverse <$> replicateM ySize (replicateM xSize parse)
+		cs <- transpose . reverse <$> replicateM ySize (replicateM xSize parseT)
 		return Board
 			{ height = ySize
 			, cells = V.fromListN xSize (map (U.fromListN ySize) cs)
@@ -496,7 +513,7 @@ instance Protocol Board where
 			| otherwise = pp (fromMaybe Empty (get board (Position x y))) <> go (x+1) y
 
 instance Protocol StateRequestTime where
-	parse = asum
+	parseT = asum
 		[ AtFrame <$> parseComponent
 		, NextControlMode <$ parseComponentSeparator <* parseLiteral "control"
 		, NextCleanupMode <$ parseComponentSeparator <* parseLiteral "cleanup"
@@ -516,7 +533,7 @@ instance Protocol StateRequestTime where
 -- This also gives a little bit of safety: we only include 'Repeatable'
 -- instances when the repetition of a type's protocol format is clearly
 -- splittable in the right way, which helps us catch type errors if we try to
--- parse a list using 'parse' for an unintended type.
+-- parse a list using 'parseT' for an unintended type.
 --
 -- You should not create instances of 'Repeatable' yourself.
 class Repeatable a
@@ -527,25 +544,29 @@ instance Repeatable ClientMessage
 instance Repeatable ServerMessage
 
 instance (Protocol a, Repeatable a) => Protocol [a] where
-	parse = many parse
+	parseT = many parseT
 	pp xs = foldMap pp xs
 
 instance Protocol (Position, Cell) where
-	parse = liftA2 (,) parseComponent parseComponent
+	parseT = liftA2 (,) parseComponent parseComponent
 	pp (p, c) = ppComponent p <> ppComponent c
 
+-- | The longest sequence of 'ButtonPress'es that the protocol guarantees will
+-- be accepted as-is by your communication partner.
 buttonPressSize :: Int
 buttonPressSize = 624
 
+-- | The longest message length that the protocol guarantees will be accepted
+-- as-is by your communication partner.
 messageSize :: Int
 messageSize = 8192
 
 instance Protocol ClientMessage where
-	parse = asum
+	parseT = asum
 		[ parse3 Control "control"
 		, parse1 Debug "debug"
 		, parse2 Queue "queue"
-		, RequestState <$ parseLiteral "request-state" <*> parse
+		, RequestState <$ parseLiteral "request-state" <*> parseT
 		, parse1 Version "version"
 		] <* parseMessageSeparator
 
@@ -569,7 +590,7 @@ instance Protocol ClientMessage where
 		go (Version v) = pp1 "version" v
 
 instance Protocol ModeState where
-	parse = asum
+	parseT = asum
 		[ parse0 CleanupState "cleanup"
 		, parse2 ControlState "control"
 		]
@@ -578,7 +599,7 @@ instance Protocol ModeState where
 	pp (ControlState frames pill) = pp2 "control" frames pill
 
 instance Protocol ServerMessage where
-	parse = asum
+	parseT = asum
 		[ parse1 AcceptControl "accept-control"
 		, parse1 AcceptQueue "accept-queue"
 		, parse1 FarControl "far-control"
