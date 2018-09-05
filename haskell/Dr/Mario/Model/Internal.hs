@@ -11,7 +11,7 @@ module Dr.Mario.Model.Internal
 	) where
 
 import Data.Bits
-import Data.Default.Class
+import Data.Default
 import Data.Primitive.ByteArray (setByteArray)
 import Data.Word
 import qualified Data.Vector                      as V
