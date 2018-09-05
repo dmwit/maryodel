@@ -1,3 +1,4 @@
+{-# LANGUAGE LambdaCase #-}
 module Dr.Mario.Protocol.Client
 	( initializeConnection
 	, Connection
@@ -11,6 +12,7 @@ import Control.Monad
 import Data.Attoparsec.ByteString (IResult(..))
 import Data.ByteString (ByteString)
 import Data.ByteString.Builder (hPutBuilder)
+import Data.Foldable
 import Data.Map (Map)
 import System.IO
 
@@ -59,6 +61,7 @@ data Diagnostic
 	-- count this as a unique player for the purposes of switching from the
 	-- @game_setup@ to @cleanup@ state.
 	| MissingYou !(Map R.PlayerIdentifier PlayerState)
+	-- TODO: maybe don't throw away the 'R.PlayerIdentifier' we chose for @you@
 	-- ^ We've seen the right number of players to switch from @game_setup@ to
 	-- @cleanup@, but none of them were @you@. We've arbitrarily picked one to
 	-- act as @you@ (and subsequently forgotten the 'R.PlayerIdentifier' the
@@ -110,12 +113,8 @@ negotiateVersion dbg fromServer toServer = go False where
 		R.RequestVersion -> when success (atomically $ writeTChan toServer (R.Version R.protocolVersion)) >> return success
 		_ -> return False
 
--- TODO: Do we need this type at all? Perhaps we should just return an IO
--- GameState instead of a Connection from initializeConnection.
-data Connection = Connection
-
--- | @initializeConnection s2c c2s@ initializes a connection with a server. It
--- will receive 'R.ServerMessage's on @s2c@, send 'R.ClientMessage's on
+-- | @initializeConnection s2c c2s f@ initializes a connection with a server.
+-- It will receive 'R.ServerMessage's on @s2c@, send 'R.ClientMessage's on
 -- @c2s@, and print diagnostic information to 'stderr'. Blocks until version
 -- negotiation with the server is finished; returns 'Nothing' if version
 -- negotiation fails.
@@ -123,8 +122,11 @@ data Connection = Connection
 -- You should not do anything with the handles after calling
 -- 'initializeConnection'. If version negotiation fails, they will be closed
 -- for you.
-initializeConnection :: Handle -> Handle -> IO (Maybe Connection)
-initializeConnection hFromServer hToServer = do
+--
+-- @f@ will be invoked (in its own thread) whenever something especially
+-- interesting happens.
+initializeConnection :: Handle -> Handle -> (GameDelta -> IO a) -> IO (Maybe (IO GameState))
+initializeConnection hFromServer hToServer deltaCallback = do
 	chanDbg <- newTChanIO
 	chanFromServer <- newTChanIO
 	chanToServer <- newTChanIO
@@ -135,8 +137,8 @@ initializeConnection hFromServer hToServer = do
 	if goodVersion
 	then do
 		refGameState <- newTMVarIO IMatchSetup
-		forkIO (handleMessages chanDbg refGameState chanFromServer)
-		return (Just Connection)
+		forkIO (handleMessages chanDbg refGameState chanFromServer deltaCallback)
+		return (Just (atomically (readTMVar refGameState) >>= freezeGameState))
 	else do
 		killThread threadToServer
 		killThread threadFromServer
@@ -166,7 +168,23 @@ data GameState
 	-- 3. Opponents' state (if any); will not have 'R.you' as a key
 	deriving (Eq, Ord, Read, Show)
 
-data PlayerState = PlayerState deriving (Eq, Ord, Read, Show)
+data GameDelta
+	= GameStarted !PlayerState !(Map R.Identifier PlayerState)
+	| Winner !R.PlayerIdentifier
+	deriving (Eq, Ord, Read, Show)
+
+data PlayerState = PlayerState
+	{ dropRate :: !R.Word32
+	, pillLookahead :: !PillContent
+	, board :: !Board
+	, mode :: !ModeState
+	, dead :: !Bool
+	} deriving (Eq, Ord, Read, Show)
+
+data ModeState
+	= Cleanup
+	| Control !R.Word32 !Pill -- ^ on which frame the pill will be next forced to drop one row, what the pill is
+	deriving (Eq, Ord, Read, Show)
 
 -- | A reification of the protocol's state machine, without any of the
 -- additional information that should be available in each state.
@@ -187,10 +205,21 @@ data ProtocolState
 data IGameState
 	= IMatchSetup
 	| IGameSetup !R.Word32 !(Map R.Identifier IPlayerState)
+	-- TODO: we should probably update the protocol so that we always have a
+	-- frame number while the game is in progress; e.g. maybe the transition
+	-- from game_setup to cleanup should happen at a frame message, not at a
+	-- state message
 	| IGameInProgress !R.Word32 (Maybe R.Word32) !IPlayerState !(Map R.Identifier IPlayerState)
 	-- ^ Extra field: how many players games will default to, once we get back to that state
 
 data IPlayerState = IPlayerState
+	{ iCachedFrozenState :: TVar (Maybe PlayerState)
+	, iDropRate :: !R.Word32
+	, iPillLookahead :: !PillContent
+	, iBoard :: !IOBoard
+	, iMode :: !ModeState
+	, iDead :: !Bool
+	}
 
 -- | Pick out 'R.you', unless it ain't there, in which case pick out something
 -- (anything, as long as it's a consistent choice), unless there's nothing
@@ -201,15 +230,40 @@ selectYou m = case M.updateLookupWithKey (\_ _ -> Nothing) R.you m of
 	_ -> M.minViewWithKey m
 
 freezePlayerState :: IPlayerState -> IO PlayerState
-freezePlayerState IPlayerState = return PlayerState
+freezePlayerState ips = readTVarIO (iCachedFrozenState ips) >>= \case
+	Just ps -> return ps
+	Nothing -> do
+		frozenBoard <- mfreeze (iBoard ips)
+		let playerState = PlayerState
+		    	{ dropRate = iDropRate ips
+		    	, pillLookahead = iPillLookahead ips
+		    	, board = frozenBoard
+		    	, mode = iMode ips
+		    	, dead = iDead ips
+		    	}
+		atomically $ writeTVar (iCachedFrozenState ips) (Just playerState)
+		return playerState
+
+thawPlayerState :: PlayerState -> IO IPlayerState
+thawPlayerState ps = do
+	cachedPlayerState <- newTVarIO (Just ps)
+	iBoard <- thaw (board ps)
+	return IPlayerState
+		{ iCachedFrozenState = cachedPlayerState
+		, iDropRate = dropRate ps
+		, iPillLookahead = pillLookahead ps
+		, iBoard = iBoard
+		, iMode = mode ps
+		, iDead = dead ps
+		}
 
 freezeGameState :: IGameState -> IO GameState
 freezeGameState IMatchSetup = return MatchSetup
 freezeGameState (IGameSetup n m) = GameSetup n <$> traverse freezePlayerState m
 freezeGameState (IGameInProgress _ n ips m) = GameInProgress n <$> freezePlayerState ips <*> traverse freezePlayerState m
 
-handleMessages :: TChan Diagnostic -> TMVar IGameState -> TChan R.ServerMessage -> IO ()
-handleMessages dbg refGameState msgs = forever $ do
+handleMessages :: TChan Diagnostic -> TMVar IGameState -> TChan R.ServerMessage -> (GameDelta -> IO a) -> IO ()
+handleMessages dbg refGameState msgs deltaCallback = forever $ do
 	msg <- atomically $ readTChan msgs
 	-- We could use readTMVar/swapTMVar instead of takeTMVar/putTMVar
 	-- here to reduce the time we hold the lock. However, for cases that
@@ -221,21 +275,28 @@ handleMessages dbg refGameState msgs = forever $ do
 	-- handling all message types -- not just the few that muck with boards --
 	-- is probably good enough in almost all cases, we do it the simple way.
 	iGameState <- atomically $ takeTMVar refGameState
-	(diagnostics, iGameState') <- handleMessage iGameState msg
+	(diagnostics, delta, iGameState') <- handleMessage iGameState msg
 	atomically $ do
 		mapM_ (writeTChan dbg) diagnostics
 		putTMVar refGameState iGameState'
+	traverse_ (forkIO . void . deltaCallback) delta
 
 -- TODO: WriterT [Diagnostic] IO IGameState?
-handleMessage :: IGameState -> R.ServerMessage -> IO ([Diagnostic], IGameState)
+handleMessage :: IGameState -> R.ServerMessage -> IO ([Diagnostic], Maybe GameDelta, IGameState)
 handleMessage IMatchSetup (R.Players n) = players n
 
-handleMessage IMatchSetup msg = return ([IllegalMessage MatchSetupState msg], IMatchSetup)
+handleMessage IMatchSetup msg = return ([IllegalMessage MatchSetupState msg], Nothing, IMatchSetup)
 
 handleMessage IGameSetup{} (R.Players n) = players n
 
-handleMessage (IGameSetup nPlayers players) (R.State player dropFrames pill board mode) = do
-	iPlayerState <- undefined
+handleMessage (IGameSetup nPlayers players) (R.State player dropFrames pill initialBoard mode) = do
+	iPlayerState <- thawPlayerState $ PlayerState
+		{ dropRate = dropFrames
+		, pillLookahead = pill
+		, board = initialBoard
+		, mode = Cleanup
+		, dead = False
+		}
 
 	let (oldVal_, players') = M.insertLookupWithKey (\_ _ _ -> iPlayerState) player iPlayerState players
 	oldVal <- traverse freezePlayerState oldVal_
@@ -245,23 +306,24 @@ handleMessage (IGameSetup nPlayers players) (R.State player dropFrames pill boar
 	    gameSetup = IGameSetup nPlayers' players'
 
 	if nPlayers' /= 0
-	then return (diagnostics, gameSetup)
+	then return (diagnostics, Nothing, gameSetup)
 	else case selectYou players' of
 		Just ((you, ips), players'') -> do
-			-- TODO: send a GameStarted delta with all the relevant PlayerStates
-			playerStates <- if you == R.you
-				then return M.empty -- won't get used anyway
-				else traverse freezePlayerState players'
+			frozenYou <- freezePlayerState ips
+			frozenOpponents <- traverse freezePlayerState players''
 			return
-				( diagnostics ++ [MissingYou playerStates | you /= R.you]
+				( diagnostics ++ [MissingYou (M.insert you frozenYou frozenOpponents) | you /= R.you]
+				, Just (GameStarted frozenYou frozenOpponents)
 				, IGameInProgress (fromIntegral (length players')) Nothing ips players''
 				)
 		Nothing -> fail "The impossible happened! We tried to leave the game_setup state even though we hadn't seen any players listed. This is a bug in maryodel, and you should complain to its maintainer."
 
+handleMessage gs@IGameSetup{} msg = return ([IllegalMessage GameSetupState msg], Nothing, gs)
+
 handleMessage (IGameInProgress _ n ips m) (R.Players n') = do
 	diagnostic <- IllegalGameEnd n <$> freezePlayerState ips <*> traverse freezePlayerState m
-	(diagnostics, igs) <- players n'
-	return (diagnostic:diagnostics, igs)
+	(diagnostics, _, igs) <- players n'
+	return (diagnostic:diagnostics, Just (Winner R.you), igs)
 
-players :: R.Word32 -> IO ([Diagnostic], IGameState)
-players n = return ([ZeroPlayers | n == 0], IGameSetup (max n 1) M.empty)
+players :: R.Word32 -> IO ([Diagnostic], Maybe GameDelta, IGameState)
+players n = return ([ZeroPlayers | n == 0], Nothing, IGameSetup (max n 1) M.empty)

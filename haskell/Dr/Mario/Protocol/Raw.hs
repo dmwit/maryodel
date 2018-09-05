@@ -112,7 +112,7 @@ newtype ButtonPress = ButtonPress { getAtomicButtonPresses :: Map Button ButtonA
 
 data ModeState
 	= CleanupState
-	| ControlState !Word32 !Pill
+	| ControlState !Word32 !Pill -- ^ how many frames before the pill is forced to drop one row, what the pill is
 	deriving (Eq, Ord, Read, Show)
 
 data StateRequestTime

@@ -13,7 +13,7 @@ module Dr.Mario.Model
 	, get, getColor, unsafeGet
 	, move, rotate, place, garbage
 	, pp
-	, MBoard
+	, MBoard, IOBoard
 	, thaw, mfreeze, munsafeFreeze
 	, memptyBoard
 	, mwidth, mheight
@@ -22,6 +22,7 @@ module Dr.Mario.Model
 
 import Control.Applicative
 import Control.Monad
+import Control.Monad.Primitive
 import Control.Monad.ST
 import Data.Foldable (toList)
 import Data.Map (Map)
@@ -285,13 +286,18 @@ data MBoard s = MBoard
 	, mcells :: !(MV.MVector s Cell)
 	}
 
+-- | Just a convenient shorthand for the type of 'MBoard' that can be used in
+-- 'IO'.
+type IOBoard = MBoard (PrimState IO)
+
 memptyBoard
-	:: Int -- ^ width
+	:: PrimMonad m
+	=> Int -- ^ width
 	-> Int -- ^ height
-	-> ST s (MBoard s)
+	-> m (MBoard (PrimState m))
 memptyBoard w h = MBoard w h <$> MV.new (w*h)
 
-thaw :: Board -> ST s (MBoard s)
+thaw :: PrimMonad m => Board -> m (MBoard (PrimState m))
 thaw board = do
 	-- the unsafeThaw should be safe because U.concat makes a new vector not
 	-- used elsewhere
@@ -303,7 +309,7 @@ thaw board = do
 		}
 
 -- | The 'MBoard' argument should not be used again after 'munsafeFreeze'ing it.
-munsafeFreeze :: MBoard s -> ST s Board
+munsafeFreeze :: PrimMonad m => MBoard (PrimState m) -> m Board
 munsafeFreeze MBoard { mwidth = w, mheight = h, mcells = mcs } = do
 	cs <- U.unsafeFreeze mcs
 	return Board
@@ -311,7 +317,7 @@ munsafeFreeze MBoard { mwidth = w, mheight = h, mcells = mcs } = do
 		, cells  = V.generate w (\x -> U.slice (x * h) h cs)
 		}
 
-mfreeze :: MBoard s -> ST s Board
+mfreeze :: PrimMonad m => MBoard (PrimState m) -> m Board
 mfreeze MBoard { mwidth = w, mheight = h, mcells = mcs } = do
 	cs <- U.freeze mcs
 	return Board
@@ -320,22 +326,22 @@ mfreeze MBoard { mwidth = w, mheight = h, mcells = mcs } = do
 		}
 
 -- | Doesn't do bounds checking.
-munsafeGet :: MBoard s -> Position -> ST s Cell
+munsafeGet :: PrimMonad m => MBoard (PrimState m) -> Position -> m Cell
 munsafeGet mb p = MV.unsafeRead (mcells mb) (x p * mheight mb + y p)
 
-mget :: MBoard s -> Position -> ST s (Maybe Cell)
+mget :: PrimMonad m => MBoard (PrimState m) -> Position -> m (Maybe Cell)
 mget mb p
 	| x p >= 0 && x p < mwidth mb && y p >= 0 && y p < mheight mb = Just <$> munsafeGet mb p
 	| otherwise = return Nothing
 
 -- | Doesn't do bounds checking, and doesn't promise anything about clears or
 -- gravity.
-munsafeSet :: MBoard s -> Position -> Cell -> ST s ()
+munsafeSet :: PrimMonad m => MBoard (PrimState m) -> Position -> Cell -> m ()
 munsafeSet mb p c = MV.unsafeWrite (mcells mb) (x p * mheight mb + y p) c
 
 -- | Out-of-bounds writes are silently discarded. Doesn't promise anything
 -- about clears or gravity.
-mset :: MBoard s -> Position -> Cell -> ST s ()
+mset :: PrimMonad m => MBoard (PrimState m) -> Position -> Cell -> m ()
 mset mb p cell
 	| x p >= 0 && x p < mwidth mb && y p >= 0 && y p < mheight mb = munsafeSet mb p cell
 	| otherwise = return ()
@@ -343,7 +349,7 @@ mset mb p cell
 -- | Modify the cell at a given position, and return the old value.
 --
 -- Doesn't do bounds checking or promise anything about clears or gravity.
-munsafeModify :: MBoard s -> Position -> (Cell -> Cell) -> ST s Cell
+munsafeModify :: PrimMonad m => MBoard (PrimState m) -> Position -> (Cell -> Cell) -> m Cell
 munsafeModify mb p f = do
 	c <- MV.unsafeRead v i
 	MV.unsafeWrite v i (f c)
@@ -355,7 +361,7 @@ munsafeModify mb p f = do
 -- | Place a virus. Out-of-bounds positions are silently discarded. Does not
 -- trigger clears of 4-in-a-rows, so it is the caller's responsibility to
 -- ensure this isn't needed.
-minfect :: MBoard s -> Position -> Color -> ST s ()
+minfect :: PrimMonad m => MBoard (PrimState m) -> Position -> Color -> m ()
 minfect mb p col = mset mb p (Occupied col Virus)
 
 -- | @unsafeClear board positions@ takes a board and a collection of positions
@@ -365,7 +371,7 @@ minfect mb p col = mset mb p (Occupied col Virus)
 --
 -- It is the caller's responsibility to ensure that the given positions are in
 -- bounds. Under that assumption, the returned positions definitely will be.
-unsafeClear :: Foldable f => MBoard s -> f Position -> ST s (Set Position)
+unsafeClear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m (Set Position)
 unsafeClear mb ps = do
 	(clears_, disconnects_, drops_) <- unzip3 <$> mapM clearSingleMatch (toList ps)
 	let clears = S.unions clears_
@@ -409,7 +415,7 @@ unsafeClear mb ps = do
 --
 -- It is the caller's responsibility to ensure that the given positions are in
 -- bounds. Under that assumption, the returned positions definitely will be.
-unsafeDrop :: Foldable f => MBoard s -> f Position -> ST s (Set Position)
+unsafeDrop :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m (Set Position)
 unsafeDrop mb ps = do
 	ps_ <- mapM dropSingle (toList ps)
 	let ps' = S.toAscList . S.unions $ ps_
@@ -458,7 +464,7 @@ unsafeDrop mb ps = do
 
 -- | How far away is the last valid position with the same color as the given
 -- position in the given direction?
-mrunLength :: MBoard s -> Position -> Direction -> ST s Int
+mrunLength :: PrimMonad m => MBoard (PrimState m) -> Position -> Direction -> m Int
 mrunLength mb p dir = do
 	cell <- mget mb p
 	case cell of
@@ -467,7 +473,7 @@ mrunLength mb p dir = do
 
 -- | How far away is the last valid position of the given color in the given
 -- direction? (Does not check that the given position is of the given color.)
-mcolorRunLength :: MBoard s -> Position -> Direction -> Maybe Color -> ST s Int
+mcolorRunLength :: PrimMonad m => MBoard (PrimState m) -> Position -> Direction -> Maybe Color -> m Int
 mcolorRunLength mb p dir col = go (unsafeMove dir p) 0 where
 	go p n = do
 		cell <- mget mb p
@@ -479,7 +485,7 @@ mcolorRunLength mb p dir col = go (unsafeMove dir p) 0 where
 --
 -- Caller is responsible for ensuring that the positions provided are in
 -- bounds.
-unsafeDropAndClear :: Foldable f => MBoard s -> f Position -> ST s ()
+unsafeDropAndClear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m ()
 unsafeDropAndClear mb ps
 	| null ps = return ()
 	| otherwise = unsafeDrop mb ps >>= unsafeClearAndDrop mb
@@ -488,7 +494,7 @@ unsafeDropAndClear mb ps
 --
 -- Caller is responsible for ensuring that the positions provided are in
 -- bounds.
-unsafeClearAndDrop :: Foldable f => MBoard s -> f Position -> ST s ()
+unsafeClearAndDrop :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m ()
 unsafeClearAndDrop mb ps
 	| null ps = return ()
 	| otherwise = unsafeClear mb ps >>= unsafeDropAndClear mb

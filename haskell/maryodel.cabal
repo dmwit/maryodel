@@ -15,6 +15,7 @@ cabal-version:       >=1.10
 library
   exposed-modules:     Dr.Mario.Model,
                        Dr.Mario.Model.Internal,
+                       Dr.Mario.Protocol.Client,
                        Dr.Mario.Protocol.Raw
   other-extensions:    BinaryLiterals,
                        TypeFamilies,
@@ -27,6 +28,7 @@ library
                        data-default-class >=0.1 && <0.2,
                        mtl >=2.2 && <2.3,
                        primitive >=0.6 && <0.7,
+                       stm >=2.4 && <2.5,
                        vector >=0.12 && <0.13
   default-language:    Haskell2010
   ghc-options:         -fno-warn-tabs -funbox-strict-fields
