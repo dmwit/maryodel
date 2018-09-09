@@ -1,6 +1,9 @@
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE ViewPatterns #-}
 module Dr.Mario.Protocol.Client
 	( initializeConnection
+	, currentGameState
+	, control
 	, GameState(..)
 	, GameDelta(..)
 	, PlayerState(..)
@@ -50,21 +53,11 @@ data Diagnostic
 	-- line.
 	| ParseWarning !R.ParseWarning
 	| IllegalMessage !ProtocolState !R.ServerMessage
-	-- ^ The server sent illegal message that made so little sense that
+	-- ^ The server sent an illegal message that made so little sense that
 	-- there was no hope but to ignore it and hope for the best. (There are
 	-- more customized diagnostics for situations where there is a more
 	-- targeted recovery plan.) The diagnostic includes the client's belief
 	-- about what state the protocol was in at the time and the message itself.
-	| IllegalGameEnd (Maybe Word32) !PlayerState !(Map R.Identifier PlayerState)
-	-- ^ The server sent a message choosing a number of players while a game
-	-- was in progress. That doesn't seem right. Well, anyway, we transitioned
-	-- out of the game-in-progress and into the @game_setup@ state to see if we
-	-- can continue anyway. The diagnostic includes the game state that was
-	-- thrown away at that moment -- all the fields of the 'GameInProgress'
-	-- constructor.
-	| ZeroPlayers
-	-- ^ The server said the next game should have zero players in it, which is
-	-- not allowed. We rounded up to 1.
 	| DuplicatePlayer !R.PlayerIdentifier !PlayerState
 	-- ^ The server sent us two game states for the same player. This is the
 	-- old one, which we are throwing away in favor of a new one. We don't
@@ -72,14 +65,15 @@ data Diagnostic
 	-- @game_setup@ to @cleanup@ state.
 	| MissingYou !(Map R.PlayerIdentifier PlayerState)
 	-- TODO: maybe don't throw away the 'R.PlayerIdentifier' we chose for @you@
+
 	-- ^ We've seen the right number of players to switch from @game_setup@ to
 	-- @cleanup@, but none of them were @you@. We've arbitrarily picked one to
 	-- act as @you@ (and subsequently forgotten the 'R.PlayerIdentifier' the
 	-- server actually used for that player... this isn't likely to end well).
 	| ExtraControlState !Word32 !Pill
 	-- ^ The server sent a @state ... control ...@ message instead of a @state
-	-- ... cleanup@ message during the @game_setup@ phase. We're going to
-	-- ignore the extra stuff.
+	-- ... cleanup@ message during the @game_setup@ or @game_setup_zero@
+	-- phases. We're going to ignore the extra stuff.
 	| UnknownID !R.ServerMessage
 	-- ^ The server sent a @control@ or @queue@ reply, but either for an
 	-- 'R.Identifier' we never made a request for or for an 'R.Identifier' it
@@ -132,6 +126,9 @@ data Connection = Connection
 	, chanToServer :: TChan R.ClientMessage
 	}
 
+-- TODO: write some documentation about the two ways of writing a client (push
+-- v. pull)
+
 -- | @initializeConnection s2c c2s f@ initializes a connection with a server.
 -- It will receive 'R.ServerMessage's on @s2c@, send 'R.ClientMessage's on
 -- @c2s@, and print diagnostic information to 'stderr'. Blocks until version
@@ -155,7 +152,7 @@ initializeConnection hFromServer hToServer deltaCallback = do
 	goodVersion <- negotiateVersion chanDbg chanFromServer chanToServer
 	if goodVersion
 	then do
-		refGameState <- newTMVarIO IMatchSetup
+		refGameState <- newTMVarIO (ISetup def)
 		forkIO (handleMessages chanDbg refGameState chanFromServer deltaCallback)
 		return (Just (Connection refGameState chanToServer))
 	else do
@@ -178,10 +175,10 @@ control conn frame bps callback_ = do
 	let callback = void . callback_
 	igs <- atomically $ takeTMVar (refGameState conn)
 	(igs', discarded) <- case igs of
-		IGameInProgress players cbControl n ips m -> do
+		IInProgress cbControl n ips m -> do
 			let (ident, cbControl') = fresh callback cbControl
 			atomically $ writeTChan (chanToServer conn) (R.Control ident frame bps)
-			return (IGameInProgress players cbControl' n ips m, False)
+			return (IInProgress cbControl' n ips m, False)
 		_ -> return (igs, True)
 	atomically $ putTMVar (refGameState conn) igs'
 	when discarded (void . forkIO $ callback Discarded)
@@ -190,18 +187,17 @@ control conn frame bps callback_ = do
 -- represented here; the connection initialization methods don't return until
 -- version negotiation is finished.
 data GameState
-	= MatchSetup
-	| GameSetup !Word32 !(Map R.Identifier PlayerState)
-	-- ^ Number of players whose state we haven't seen yet, states we have seen
-	-- already (may have 'R.you' as a key).
-	| GameInProgress (Maybe Word32) !PlayerState !(Map R.Identifier PlayerState)
+	= Setup !(Map R.Identifier PlayerState)
+	-- ^ The protocol's @game_setup_zero@ and @game_setup@ states are collapsed
+	-- into 'Setup'. The 'Map' may have 'R.you' as a key.
+	| InProgress !Word32 !PlayerState !(Map R.Identifier PlayerState)
 	-- ^ The protocol's @cleanup@ and @control@ states are collapsed into
-	-- 'GameInProgress'. You can check the first 'PlayerState' to see whether
-	-- the official protocol state is @cleanup@ or @control@.
+	-- 'InProgress'. You can check the first 'PlayerState' to see whether the
+	-- official protocol state is @cleanup@ or @control@.
 	--
 	-- The fields are:
 	--
-	-- 1. Current frame number ('Nothing' means no frame has been announced yet)
+	-- 1. Current frame number
 	-- 2. This client's state
 	-- 3. Opponents' state (if any); will not have 'R.you' as a key
 	deriving (Eq, Ord, Read, Show)
@@ -229,7 +225,7 @@ data ModeState
 data ProtocolState
 	= VersionProposalState
 	| VersionSelectionState
-	| MatchSetupState
+	| GameSetupZeroState
 	| GameSetupState
 	| CleanupState
 	| ControlState
@@ -241,18 +237,10 @@ data ProtocolState
 --
 -- Extra fields come first.
 data IGameState
-	= IMatchSetup
-	| IGameSetup !Word32 !(Map R.Identifier IPlayerState)
-	-- TODO: we should probably update the protocol so that we always have a
-	-- frame number while the game is in progress; e.g. maybe the transition
-	-- from game_setup to cleanup should happen at a frame message, not at a
-	-- state message
-	| IGameInProgress !Word32 !(IdentifierMap (Response () -> IO ()))
-	                  (Maybe Word32) !IPlayerState !(Map R.Identifier IPlayerState)
-	-- ^ Extra fields:
-	--
-	-- * how many players games will default to, once we get back to that state
-	-- * callbacks for @control@ messages
+	= ISetup !(Map R.Identifier IPlayerState)
+	| IInProgress !CallbackMap
+	              !Word32 !IPlayerState !(Map R.Identifier IPlayerState)
+	-- ^ Extra field: callbacks for @control@ messages
 
 data Response a
 	= Accept !a -- ^ The server accepted your request, and replied with the data included here
@@ -260,6 +248,8 @@ data Response a
 	| Old -- ^ The server rejected your request because it was about the past
 	| Discarded -- ^ The server discarded your request because the conditions of the request didn't come up before the game ended
 	deriving (Eq, Ord, Read, Show)
+
+type CallbackMap = IdentifierMap (Response () -> IO ())
 
 -- | A type for creating fresh 'R.Identifier's and associating them with
 -- values.
@@ -343,9 +333,8 @@ thawPlayerState ps = do
 		}
 
 freezeGameState :: IGameState -> IO GameState
-freezeGameState IMatchSetup = return MatchSetup
-freezeGameState (IGameSetup n m) = GameSetup n <$> traverse freezePlayerState m
-freezeGameState (IGameInProgress _ _ n ips m) = GameInProgress n <$> freezePlayerState ips <*> traverse freezePlayerState m
+freezeGameState (ISetup m) = Setup <$> traverse freezePlayerState m
+freezeGameState (IInProgress _ n ips m) = InProgress n <$> freezePlayerState ips <*> traverse freezePlayerState m
 
 handleMessages :: TChan Diagnostic -> TMVar IGameState -> TChan R.ServerMessage -> (GameDelta -> IO a) -> IO ()
 handleMessages dbg refGameState msgs deltaCallback = forever $ do
@@ -368,13 +357,7 @@ handleMessages dbg refGameState msgs deltaCallback = forever $ do
 
 -- TODO: WriterT [Diagnostic] IO IGameState?
 handleMessage :: IGameState -> R.ServerMessage -> IO ([Diagnostic], Maybe GameDelta, IGameState)
-handleMessage IMatchSetup (R.Players n) = players n
-
-handleMessage IMatchSetup msg = return ([IllegalMessage MatchSetupState msg], Nothing, IMatchSetup)
-
-handleMessage IGameSetup{} (R.Players n) = players n
-
-handleMessage (IGameSetup nPlayers players) (R.State player dropFrames pill initialBoard mode) = do
+handleMessage (ISetup players) (R.State player dropFrames pill initialBoard mode) = do
 	iPlayerState <- thawPlayerState $ PlayerState
 		{ dropRate = dropFrames
 		, pillLookahead = pill
@@ -385,64 +368,35 @@ handleMessage (IGameSetup nPlayers players) (R.State player dropFrames pill init
 
 	let (oldVal_, players') = M.insertLookupWithKey (\_ _ _ -> iPlayerState) player iPlayerState players
 	oldVal <- traverse freezePlayerState oldVal_
-	let nPlayers' = nPlayers - 1 + fromIntegral (length oldVal)
-	    diagnostics =  foldMap (\v -> [DuplicatePlayer player v]) oldVal
+	let diagnostics =  foldMap (\v -> [DuplicatePlayer player v]) oldVal
 	                ++ [ExtraControlState dropFrames' pill' | R.ControlState dropFrames' pill' <- [mode]]
-	    gameSetup = IGameSetup nPlayers' players'
 
-	if nPlayers' /= 0
-	then return (diagnostics, Nothing, gameSetup)
-	else case selectYou players' of
-		Just ((you, ips), players'') -> do
-			frozenYou <- freezePlayerState ips
-			frozenOpponents <- traverse freezePlayerState players''
-			return
-				( diagnostics ++ [MissingYou (M.insert you frozenYou frozenOpponents) | you /= R.you]
-				, Just (GameStarted frozenYou frozenOpponents)
-				, IGameInProgress (fromIntegral (length players')) def Nothing ips players''
-				)
-		Nothing -> fail "The impossible happened! We tried to leave the game_setup state even though we hadn't seen any players listed. This is a bug in maryodel, and you should complain to its maintainer."
+	return (diagnostics, Nothing, ISetup players')
 
-handleMessage gs@IGameSetup{} msg = return ([IllegalMessage GameSetupState msg], Nothing, gs)
-
-handleMessage (IGameInProgress _ cbControl n ips m) (R.Players n') = do
-	diagnostic <- IllegalGameEnd n <$> freezePlayerState ips <*> traverse freezePlayerState m
-	(diagnostics, _, igs) <- players n'
-	discardAll cbControl
-	return (diagnostic:diagnostics, Just (Winner R.you), igs)
-
-handleMessage (IGameInProgress players cbControl n ips m) msg@(R.AcceptControl id) = case discharge cbControl id of
-	Just (callback, cbControl') -> do
-		forkIO (callback (Accept ()))
-		return ([], Nothing, IGameInProgress players cbControl' n ips m)
-	Nothing -> return
-		( [UnknownID msg]
-		, Nothing
-		, IGameInProgress players cbControl n ips m
+handleMessage (ISetup (selectYou -> Just ((you, ips), players))) (R.Frame n) = do
+	frozenYou <- freezePlayerState ips
+	frozenOpponents <- traverse freezePlayerState players
+	return
+		( [MissingYou (M.insert you frozenYou frozenOpponents) | you /= R.you]
+		, Just (GameStarted frozenYou frozenOpponents)
+		, IInProgress def n ips players
 		)
 
-handleMessage (IGameInProgress players cbControl n ips m) msg@(R.FarControl id) = case discharge cbControl id of
-	Just (callback, cbControl') -> do
-		forkIO (callback Far)
-		return ([], Nothing, IGameInProgress players cbControl' n ips m)
-	Nothing -> return
-		( [UnknownID msg]
-		, Nothing
-		, IGameInProgress players cbControl n ips m
-		)
+handleMessage igs@(ISetup players) msg = return ([IllegalMessage protocolState msg], Nothing, igs) where
+	protocolState = if M.size players == 0 then GameSetupZeroState else GameSetupState
 
-handleMessage (IGameInProgress players cbControl n ips m) msg@(R.OldControl id) = case discharge cbControl id of
-	Just (callback, cbControl') -> do
-		forkIO (callback Old)
-		return ([], Nothing, IGameInProgress players cbControl' n ips m)
-	Nothing -> return
-		( [UnknownID msg]
-		, Nothing
-		, IGameInProgress players cbControl n ips m
-		)
+handleMessage igs@(IInProgress cbControl n ips m) msg = case msg of
+	R.AcceptControl id -> triggerControlCallback id (Accept ())
+	R.FarControl    id -> triggerControlCallback id Far
+	R.OldControl    id -> triggerControlCallback id Old
 
-players :: Word32 -> IO ([Diagnostic], Maybe GameDelta, IGameState)
-players n = return ([ZeroPlayers | n == 0], Nothing, IGameSetup (max n 1) M.empty)
+	where
+
+	triggerControlCallback id resp = case discharge cbControl id of
+		Just (callback, cbControl') -> do
+			forkIO (callback resp)
+			return ([], Nothing, IInProgress cbControl' n ips m)
+		Nothing -> return ([UnknownID msg], Nothing, igs)
 
 discardAll :: IdentifierMap (Response a -> IO ()) -> IO ()
 discardAll m = traverse_ ($Discarded) (callbacks m)

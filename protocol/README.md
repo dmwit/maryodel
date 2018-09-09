@@ -38,17 +38,14 @@ In this example, and others in this document, the prefix
 client, and <code><&nbsp;</code>&#32;indicates a message sent from the client
 to the server. These marks are not actually part of the messages.
 
-After the version negotiation, the server announces the number of players.
-Currently this phase is purely informational, and there is no negotiation of
-player count, difficulty settings, or play speed. If negotiation is desired, it
+After the version negotiation, the server announces the initial game state in a
+series of messages. Currently there is no negotiation of player count,
+difficulty settings, or play speed. If such negotiation is desired, it
 must be done out-of-band. Future versions of the protocol may make this more
 interactive if the need for this capability becomes clear, but the current
-design focuses on simplicity instead. For example:
+design focuses on simplicity instead.
 
-    > players 2
-
-Then the game begins. The server announces the initial game state in a series
-of messages. Each message has a player identifier, a drop speed, a two-byte
+Each message in this phase has a player identifier, a drop speed, a two-byte
 "next pill" indicator, and a 128-byte board setup. The special player
 identifier `you` is always used for whichever client is currently getting
 messages. The drop speed indicates how many frames can pass without downward
@@ -77,13 +74,19 @@ more data: how many frames are left before the free-floating piece is forced to
 drop one row, the shape and colors of the free-floating piece, plus the x and y
 position of the bottom left corner of the piece.
 
+The server signals the end of this setup phase (and the beginning of gameplay)
+with a `frame` message; at that point, the set of player identifiers is fixed
+for the remainder of the game. The `frame` message includes a frame number, a
+monotonically increasing counter that is not guaranteed to start from zero.
+
+    > frame 538
+
 The client may request a full state update at any time with the `request-state`
 message. The server will respond with the full state on the next frame; or the
 client may request an update at a specific future frame or at the edge of a
 mode change. Out-of-date state requests are rejected with `old-state`, and
 requests for the far future are rejected with `far-state`. For example:
 
-    > frame 538
     < request-state
     > frame 539
     > state you 19 qu ddddddddddddddddddddddddddddddddddddddddddddddddbcaacbbcbbddbdccaacbadcdaacdacbbdbdcddbaccbaddcaddcdbbaddbaccbaccbacdacbdacddddd cleanup
@@ -210,21 +213,24 @@ an empty sequence of triples, as in:
 If a player fills their bottle, the server sends a `loser` message with that
 player's identifier. If a player clears all of their viruses, the server sends
 a `winner` message with that player's identifier. The server may then begin the
-protocol anew from the `player-count` message or from a complete, fresh initial
-game state, at its pleasure. The difficulty and speed settings are preserved,
-except that in single-player games the difficulty setting is increased by one
-after a `winner` message. For example, the server might send the following for
-a rematch:
+protocol anew, sending new `state` messages. Nothing special is preserved
+across the protocol restart; the server may choose a different difficulty, a
+different set of player identifiers, different player speeds, different player
+levels, or even a different number of players. For example, the server might
+send the following for a rematch:
 
-    > winner opponent
     > frame 4102
+    > winner opponent
     > state you 19 qu ddddddddddddddddddddddddddddddddddddddddddddddddbcaacbbcbbddbdccaacbadcdaacdacbbdbdcddbaccbaddcaddcdbbaddbaccbaccbacdacbdacddddd cleanup
     > state opponent 19 qu ddddddddddddddddddddddddddddddddddddddddddddddddddddddddcddddddddddddddddddddddddaddddddbbdddddddddddddddddddddddddddddddddddddd cleanup
+    > frame 4320
 
-Or the messages might look like this for a complete restart:
+Or the messages might look like this for a switch to a one-player game:
 
+    > frame 4102
     > winner opponent
-    > players 1
+    > state you 39 qu ddddddddddddddddddddddddddddddddddddddddddddddddddddddddcddddddddddddddddddddddddaddddddbbdddddddddddddddddddddddddddddddddddddd cleanup
+    > frame 4320
 
 ## Conventions
 
@@ -248,7 +254,7 @@ version of the protocol that both the server and client can understand. All
 other messages&mdash;and even the structure of messages described
 above&mdash;are subject to radical modification in future versions of the
 protocol. This document describes version
-`0-statefix-oldfarfix-boundfix-posfix`
+`1`
 of the protocol.
 
 As mentioned in the overview, this document contains many example exchanges
@@ -379,7 +385,7 @@ identifier, `mode` with a non-`you` identifier, `old-state`, and `pill` for
 servers.
 
 The diagram may appear to be nondeterministic at first; for example, the
-game\_setup state has two outgoing edges labeled `state`. However, the client
+cleanup state has two outgoing edges labeled `loser`. However, the client
 and server can always agree on which of multiple possible outgoing edges is
 being taken. This requires the use of some additional state; it is not shown in
 the above diagram because it would cause it to be needlessly complex. The
@@ -392,12 +398,12 @@ on which state the protocol is in (for example, after the server has emitted a
 client messages are allowed "one state late"; servers silently drop these late
 messages. Specifically, servers silently ignore `control` messages in the
 cleanup state and `control`, `debug`, `queue`, and `request-state` messages in
-the game\_setup state.
+the game\_setup\_zero and game\_setup states.
 
 The server has some state for each player: the status of each switch, queued
 switch manipulations, scheduled switch manipulations (when in control mode),
 outstanding state requests, and possibly some debug information. When entering
-the game\_setup state, this state is notionally cleared: the switches are reset
+the game\_setup\_zero state, this state is notionally cleared: the switches are reset
 to open, queued and scheduled switch manipulations are silently discarded,
 outstanding state requests are silently dropped, and debug information is
 cleared. When entering the cleanup state, only part of the state is cleared:
@@ -418,9 +424,9 @@ message formats, sequences enclosed by angle brackets should be replaced by
 appropriately formatted sequences as described in the "Conventions" section or
 immediately following the instantiation format. For example, the format
 
-    players <integer>
+    frame <integer>
 
-indicates that valid messages for this verb are `players `, then a non-empty
+indicates that valid messages for this verb are `frame `, then a non-empty
 sequence of digits as described by the term "integer" in the "Conventions"
 section, then a message separator.
 
@@ -460,7 +466,7 @@ willing to speak. The client will now select one of these versions.
 
     version <identifier>
 
-Landing state: match\_setup
+Landing state: game\_setup\_zero
 
 Selects a protocol version for the server and client to speak with each other.
 The client MUST use one of the identifiers sent by the server in a previous
@@ -470,26 +476,24 @@ versions, it MUST NOT send any further messages.
 This message ends the version negotiation part of the protocol, which is the
 part of the protocol that is intended to be stable across versions.
 
-### match\_setup and game\_setup states
+### game\_setup\_zero and game\_setup states
 
-#### players (S)
+#### frame (S)
 
-    players <integer>
+    frame <integer>
 
-Landing state: game\_setup
+Landing state: cleanup
 
-The given integer must be at least 1, and indicates how many distinct player
-identifiers there will be in future messages. Any information the client was
-storing about players is invalidated by this message and can be thrown away.
+Announce that all players' states have been transmitted, begin the game, and
+set the game's frame counter to the given integer. Further discussion of
+restrictions placed on the frame counter are discussed in the message reference
+for the control and cleanup states.
 
 #### state (S)
 
     state <player identifier> <integer> <pill> <board> cleanup
 
-Landing state: If the total number of unique player identifiers that have
-appeared since the last `players`, `winner`, or `loser` message matches the
-integer given in the last `players` message, then land in the cleanup state.
-Otherwise remain in game\_setup.
+Landing state: game\_setup.
 
 (Note that there is another variant of the `state` verb which is not allowed in
 this state. See the "control and cleanup states" subsection for further
@@ -502,16 +506,19 @@ indicates what free-floating piece will come under the player's control when
 the game mode changes. The board component gives the positions of the initial
 viruses.
 
-The player identifiers mentioned in `state` messages with no intervening
-`players`, `winner`, or `loser` message form the set of valid player
-identifiers to be used in future messages. This set MUST include `you`. The
+The player identifiers mentioned in `state` messages sent in the
+game\_setup\_zero and game\_setup states form the set of valid player
+identifiers to be used until the next game\_setup\_zero phase. This set MUST
+include `you`. The server MUST NOT use any identifier in two separate `state`
+messages without an intervening transition to the cleanup state. The
 server MUST NOT use any player identifiers from outside this set until it
-re-enters the game\_setup state.
+re-enters the game\_setup\_zero state.
 
 #### ignored verbs (C)
 
-The following verbs are silently ignored by the server in the game\_setup
-state: `control`, `debug`, `queue`, and `request-state`. See the "control and
+The following verbs are silently ignored by the server in the game\_setup\_zero
+and game\_setup states: `control`, `debug`, `queue`, and `request-state`. See
+the "control and
 cleanup states" subsection for the format of these messages.
 
 ### control state
@@ -627,9 +634,9 @@ on).
 
     loser <player identifier>
 
-Landing state: If this is a single-player game, land in game\_setup. If this is
+Landing state: If this is a single-player game, land in game\_setup\_zero. If this is
 an *n*-player game and this is the *n*-1'th `loser` message since we left the
-game\_setup state, land in game\_setup. Otherwise the state is unchanged.
+game\_setup state, land in game\_setup\_zero. Otherwise the state is unchanged.
 
 This message indicates that the given player has lost by filling up their
 bottle.
@@ -716,11 +723,11 @@ intervening messages.
 
     winner <player identifier>
 
-Landing state: game\_setup
+Landing state: game\_setup\_zero
 
 The player indicated won by clearing all of their viruses.
 
-Because we are now transitioning to game\_setup, the server discards any
+Because we are now transitioning to game\_setup\_zero, the server discards any
 scheduled switch manipulations, discards any queued switch manipulations,
 resets all switches to open, discards any outstanding state requests, and
 discards all debug information.
@@ -798,22 +805,33 @@ yet lost, with no intervening messages.
 
 In the first variant, the request is for whatever frame the server happens to
 be on when it processes the request, and MUST result in either a state reply or
-a transition to the game\_setup state.
+a transition to the game\_setup\_zero state.
 
 In the second variant, the request is for the frame given by the integer
 component. The server MUST do one of the following three things:
 
 1. Produce a state reply during the given frame.
 2. Reject the request with an appropriate `far-state` or `old-state` message.
-3. Transition to the game\_setup state before the given frame.
+3. Transition to the game\_setup\_zero state before the given frame.
 
 In the third and fourth variants, the request is for the next appropriate mode
 transition. The server MUST either produce a state reply during the same frame
 as the next `mode you control` message (for the third variant) or `mode you
-cleanup` message (for the fourth variant) or transition to the game\_setup
+cleanup` message (for the fourth variant) or transition to the game\_setup\_zero
 state before the relevant `mode you` message.
 
 ## Changes
+
+### `0-statefix-oldfarfix-boundfix-posfix` to `1`
+
+Removed the need (and ability) for the server to announce how many players
+would be participating in the next game: the `players` verb is now completely
+gone. Instead the server signals the transition from listing players to playing
+a game by sending a `frame` message.
+
+Besides making the server's job easier, it means clients need not store how
+many players there were in previous games, and guarantees that the client knows
+which frame the server is on during all game messages.
 
 ### `0-statefix-oldfarfix-boundfix` to `0-statefix-oldfarfix-boundfix-posfix`
 

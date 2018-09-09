@@ -99,7 +99,7 @@ unsafeStringIdentifier = Identifier . BS.pack . map (fromIntegral . fromEnum)
 
 -- | The version of the protocol currently supported by this library.
 protocolVersion :: Identifier
-protocolVersion = unsafeStringIdentifier "0-statefix-oldfarfix-boundfix-posfix"
+protocolVersion = unsafeStringIdentifier "1"
 
 -- | The special identifier used by servers to indicate the player associated
 -- with the current client.
@@ -136,7 +136,6 @@ data ServerMessage
 	| OldControl !Identifier
 	| OldState !Word32
 	| Pill !PlayerIdentifier !Pill
-	| Players !Word32
 	| ProposeVersion !Identifier
 	| RequestVersion
 	| Speed !PlayerIdentifier !Word32
@@ -639,7 +638,6 @@ instance Protocol ServerMessage where
 		, parse1 OldControl "old-control"
 		, parse1 OldState "old-state"
 		, parse2 Pill "pill"
-		, parse1 Players "players"
 		, parse1 ProposeVersion "propose-version"
 		, parse0 RequestVersion "request-version"
 		, parse2 Speed "speed"
@@ -670,7 +668,6 @@ instance Protocol ServerMessage where
 		go (OldControl ident) = pp1 "old-control" ident
 		go (OldState n) = pp1 "old-state" n
 		go (Pill player pill) = pp2 "pill" player pill
-		go (Players n) = pp1 "players" n
 		go (ProposeVersion ident) = pp1 "propose-version" ident
 		go (RequestVersion) = pp0 "request-version"
 		go (Speed player n) = pp2 "speed" player n
