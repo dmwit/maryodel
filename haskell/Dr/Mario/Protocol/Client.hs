@@ -15,17 +15,26 @@ import Control.Concurrent
 import Control.Concurrent.STM
 import Control.Concurrent.STM.TChan
 import Control.Concurrent.STM.TMVar
+import Control.Exception
 import Control.Monad
 import Data.Attoparsec.ByteString (IResult(..))
 import Data.ByteString (ByteString)
 import Data.ByteString.Builder (hPutBuilder)
 import Data.Default
 import Data.List
+import Data.Maybe
 import Data.Monoid
 import Data.Foldable
 import Data.Map (Map)
 import Data.Word
+import System.Environment
+import System.Directory
+import System.FilePath
+import System.Posix.Files
 import System.IO
+import System.IO.Error
+import System.Process
+import System.Timeout
 
 import qualified Data.Attoparsec.ByteString as A
 import qualified Data.ByteString as BS
@@ -129,20 +138,50 @@ data Connection = Connection
 -- TODO: write some documentation about the two ways of writing a client (push
 -- v. pull)
 
--- | @initializeConnection s2c c2s f@ initializes a connection with a server.
+-- | @initializeConnection rom server f@ initializes a connection with an
+-- FCEUX-based server. The @rom@ gives the location of the Dr. Mario ROM, and
+-- @server@ gives the location of the lua script implementing the server.
+-- Blocks until version negotiation with the server is finished; throws
+-- exceptions willy-nilly if everything isn't to its liking.
+--
+-- If you find yourself trying to catch exceptions thrown by
+-- 'initializeConnection', let's you and me chat about making a type that
+-- embodies the different kinds of errors and making this return a suitable
+-- `Either`. Otherwise you're going to be really unhappy with the hacks you
+-- have to do.
+--
+-- @f@ will be invoked (in its own thread) whenever something especially
+-- interesting happens.
+initializeConnection :: FilePath -> FilePath -> (GameDelta -> IO a) -> IO (Connection, ProcessHandle)
+initializeConnection rom server deltaCallback = do
+	fifos <- createFIFOs
+	ph <- launchFCEUX fifos rom server
+	handles <- openFIFOs fifos
+	mconn <- connectToHandles (serverToClient handles) (clientToServer handles) deltaCallback
+	case mconn of
+		Just conn -> return (conn, ph)
+		Nothing -> do
+			interruptProcessGroupOf ph
+			-- give it a polite second to finish up...
+			code <- timeout 1000000 (waitForProcess ph)
+			-- ...then be a bit less polite
+			when (isNothing code) (terminateProcess ph)
+			fail "Version negotiation went south. Perhaps a diplomatic dialog should be opened between server and client authors."
+
+-- | @connectToHandles s2c c2s f@ initializes a connection with a server.
 -- It will receive 'R.ServerMessage's on @s2c@, send 'R.ClientMessage's on
 -- @c2s@, and print diagnostic information to 'stderr'. Blocks until version
 -- negotiation with the server is finished; returns 'Nothing' if version
 -- negotiation fails.
 --
 -- You should not do anything with the handles after calling
--- 'initializeConnection'. If version negotiation fails, they will be closed
+-- 'connectToHandles'. If version negotiation fails, they will be closed
 -- for you.
 --
 -- @f@ will be invoked (in its own thread) whenever something especially
 -- interesting happens.
-initializeConnection :: Handle -> Handle -> (GameDelta -> IO a) -> IO (Maybe Connection)
-initializeConnection hFromServer hToServer deltaCallback = do
+connectToHandles :: Handle -> Handle -> (GameDelta -> IO a) -> IO (Maybe Connection)
+connectToHandles hFromServer hToServer deltaCallback = do
 	chanDbg <- newTChanIO
 	chanFromServer <- newTChanIO
 	chanToServer <- newTChanIO
@@ -163,6 +202,82 @@ initializeConnection hFromServer hToServer deltaCallback = do
 		hClose hFromServer
 		hClose hToServer
 		return Nothing
+
+data FIFOs a = FIFOs
+	{ tmpDir :: FilePath
+	, serverToClient, clientToServer :: a
+	} deriving (Eq, Ord, Read, Show)
+
+-- | Create some named pipes in a temporary directory suitable for use as
+-- communication medium between server and client. It's polite to delete them
+-- when you're done. Throws exceptions left and right if anything even slightly
+-- unsavory happens.
+createFIFOs :: IO (FIFOs FilePath)
+createFIFOs = do
+	xdg <- lookupEnv "XDG_RUNTIME_DIR"
+	tmpdir <- lookupEnv "TMPDIR"
+	tmp <- lookupEnv "TMP"
+	temp <- lookupEnv "TEMP"
+	let tmpRoot = head . catMaybes $ [xdg, tmpdir, tmp, temp, Just "/tmp"]
+	dir <- createNewTemp tmpRoot 0
+	let s2c = dir </> "s2c"
+	    c2s = dir </> "c2s"
+	createNamedPipe s2c 0o600
+	createNamedPipe c2s 0o600
+	return FIFOs
+		{ tmpDir = dir
+		, serverToClient = s2c
+		, clientToServer = c2s
+		}
+	where
+	createNewTemp root n = do
+		let dir = root </> "maryodel-" <> show n
+		(createDirectory dir >> return dir) `catch` \e ->
+			if isAlreadyExistsError e
+			then createNewTemp root (n+1)
+			else throwIO e
+
+-- | Opening pipes is a bit finicky. When opening the writing end you gotta
+-- wait until there's somebody reading it. This opens both ends, giving the
+-- server a second to show up and throwing an exception if it doesn't.
+--
+-- Deletes all the 'FilePath's it's passed.
+openFIFOs :: FIFOs FilePath -> IO (FIFOs Handle)
+openFIFOs fifos = openBoth `finally` deleteAll where
+	openBoth = do
+		hs2c <- openFile (serverToClient fifos) ReadMode
+		hc2s <- openWriteEnd 10
+		return fifos { serverToClient = hs2c, clientToServer = hc2s }
+
+	openWriteEnd 0 = fail $ "Couldn't open " <> clientToServer fifos <> " for writing. Perhaps the server isn't listening on that pipe?"
+	openWriteEnd n = catch
+		(openFile (clientToServer fifos) WriteMode)
+		(\e -> if isDoesNotExistError e
+		       then threadDelay 100000 >> openWriteEnd (n-1)
+		       else throwIO e
+		)
+
+	deleteAll = return ()
+		`finally` removeFile (serverToClient fifos)
+		`finally` removeFile (clientToServer fifos)
+		`finally` removeDirectory (tmpDir fifos)
+
+-- | @launchFCEUX fifos rom server@ attempts to launch a Dr. Mario server in
+-- FCEUX. It will load Dr. Mario from the location given by @rom@ and the
+-- server protocol implementation from the location given by @server@. It
+-- informs the server about the two communication pipes in @fifos@ by passing
+-- them to its stdin.
+--
+-- The server's stdout and stderr are silently ignored.
+launchFCEUX :: FIFOs FilePath -> FilePath -> FilePath -> IO ProcessHandle
+launchFCEUX fifos rom server = do
+	(fceuxIn, fceuxOut, fceuxErr, fceuxPH) <- runInteractiveProcess "fceux" ["--loadlua", server, rom] Nothing Nothing
+	hPutStrLn fceuxIn (serverToClient fifos)
+	hPutStrLn fceuxIn (clientToServer fifos)
+	hClose fceuxIn
+	forkIO . forever $ hGetLine fceuxOut
+	forkIO . forever $ hGetLine fceuxErr
+	return fceuxPH
 
 currentGameState :: Connection -> IO GameState
 currentGameState conn = atomically (readTMVar (refGameState conn)) >>= freezeGameState
