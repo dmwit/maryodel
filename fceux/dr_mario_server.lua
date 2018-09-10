@@ -1,6 +1,6 @@
 local u = require('unix')
 
-local PROTOCOL_VERSION = '0-statefix'
+local PROTOCOL_VERSION = '1'
 
 local function die(s)
 	io.stderr:write(s)
@@ -309,7 +309,7 @@ function Player.send_state(self)
 		local current_pill = self:lookcurrent()
 		local x = memory.readbyte(self.addrs.pill_x)
 		local y = memory.readbyte(self.addrs.pill_y)
-		o(table.concat({prefix .. 'control', drop, current_pill, x, y}, ' '))
+		o(table.concat({prefix .. 'control', drop, x, y, current_pill}, ' '))
 	end
 end
 
@@ -414,7 +414,6 @@ local function send_messages(before)
 		if board_mode == BOARD_MODE.prep then
 			player_count = memory.readbyte(ADDR.players)
 			playing = true
-			o('players ' .. player_count)
 			if player_count == 1 then
 				players = { Player.new(PLAYER_1_ADDRS, 'you') }
 			elseif player_count == 2 then
