@@ -377,6 +377,10 @@ function Player.create_garbage_callback(self)
 	end
 end
 
+-- TODO: This is totally incorrect. The pill x and y coordinates get reset to
+-- 3,15 before cleanup is finished, so this will frequently incorrectly declare
+-- a loser: whenever 3,15 or 4,15 are occupied at pill lock time but a match
+-- causes them to be emptied.
 function Player.create_winner_callback(self)
 	return function(addr, size)
 		if memory.readbyte(addr) == 0 and self.mode == PLAYER_MODE.cleanup and playing then
