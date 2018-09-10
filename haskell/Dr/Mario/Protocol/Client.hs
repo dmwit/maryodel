@@ -106,7 +106,7 @@ writeMsgs h dbg msgs = do
 		go
 
 -- TODO: should we try to avoid exhausting memory here...?
-readMsgs :: Handle -> TChan Diagnostic -> TChan R.ServerMessage -> IO ()
+readMsgs :: Handle -> TChan Diagnostic -> TChan (Maybe R.ServerMessage) -> IO ()
 readMsgs h dbg msgs = do
 	hSetBuffering h LineBuffering
 	atomically (goBS mempty) >>= goPartial
@@ -115,17 +115,16 @@ readMsgs h dbg msgs = do
 		bs1 <- BS.hGet h 1
 		bs2 <- BS.hGetNonBlocking h 8191
 		let bs' = bs1 <> bs2
-		-- TODO: if the server stops writing and shuts down the handle, let's
-		-- indicate that to the downstream consumer
-		fbs' <- atomically $ goResult (bs <> bs') (f bs')
-		goPartial fbs'
+		if BS.length bs1 + BS.length bs2 == 0
+		then atomically (writeTChan msgs Nothing)
+		else atomically (goResult (bs <> bs') (f bs')) >>= goPartial
 
 	goResult bs (Fail rest cxts err) = do
 		writeTChan dbg (ParseFailure bs rest cxts err)
 		goBS . BS.drop 1 . BS.dropWhile (R.messageSeparator/=) $ rest
 	goResult bs (Partial f) = return (f, bs)
 	goResult bs (Done rest (msg, warnings)) = do
-		writeTChan msgs msg
+		writeTChan msgs (Just msg)
 		mapM_ (writeTChan dbg . ParseWarning) warnings
 		goBS rest
 
@@ -134,11 +133,11 @@ readMsgs h dbg msgs = do
 stderrDiagnostics :: TChan Diagnostic -> IO ()
 stderrDiagnostics dbg = forever (atomically (readTChan dbg) >>= hPrint stderr)
 
-negotiateVersion :: TChan Diagnostic -> TChan R.ServerMessage -> TChan R.ClientMessage -> IO Bool
+negotiateVersion :: TChan Diagnostic -> TChan (Maybe R.ServerMessage) -> TChan R.ClientMessage -> IO Bool
 negotiateVersion dbg fromServer toServer = go False where
 	go success = atomically (readTChan fromServer) >>= \msg -> case msg of
-		R.ProposeVersion v -> go (success || v == R.protocolVersion)
-		R.RequestVersion -> when success (atomically $ writeTChan toServer (R.Version R.protocolVersion)) >> return success
+		Just (R.ProposeVersion v) -> go (success || v == R.protocolVersion)
+		Just R.RequestVersion -> when success (atomically $ writeTChan toServer (R.Version R.protocolVersion)) >> return success
 		_ -> return False
 
 data Connection = Connection
@@ -337,6 +336,7 @@ data GameState
 data GameDelta
 	= GameStarted !PlayerState !(Map R.Identifier PlayerState)
 	| Winner !R.PlayerIdentifier
+	| Quit -- ^ The server stopped sending messages. This is the end, folks.
 	deriving (Eq, Ord, Read, Show)
 
 data PlayerState = PlayerState
@@ -468,24 +468,30 @@ freezeGameState :: IGameState -> IO GameState
 freezeGameState (ISetup m) = Setup <$> traverse freezePlayerState m
 freezeGameState (IInProgress _ n ips m) = InProgress n <$> freezePlayerState ips <*> traverse freezePlayerState m
 
-handleMessages :: TChan Diagnostic -> TMVar IGameState -> TChan R.ServerMessage -> (GameDelta -> IO a) -> IO ()
-handleMessages dbg refGameState msgs deltaCallback = forever $ do
-	msg <- atomically $ readTChan msgs
-	-- We could use readTMVar/swapTMVar instead of takeTMVar/putTMVar
-	-- here to reduce the time we hold the lock. However, for cases that
-	-- read/alter mutable boards, we would need to be careful to hold the lock
-	-- while we accessed the boards, which would make it much more difficult to
-	-- separate concerns in the way handleMessages and handleMessage currently
-	-- does (namely: all concurrency-awareness in handleMessages, all
-	-- state-transition logic in handleMessage). Since holding the lock while
-	-- handling all message types -- not just the few that muck with boards --
-	-- is probably good enough in almost all cases, we do it the simple way.
-	iGameState <- atomically $ takeTMVar refGameState
-	(diagnostics, delta, iGameState') <- handleMessage iGameState msg
-	atomically $ do
-		mapM_ (writeTChan dbg) diagnostics
-		putTMVar refGameState iGameState'
-	traverse_ (forkIO . void . deltaCallback) delta
+handleMessages :: TChan Diagnostic -> TMVar IGameState -> TChan (Maybe R.ServerMessage) -> (GameDelta -> IO a) -> IO ()
+handleMessages dbg refGameState msgs deltaCallback = go where
+	go = do
+		mmsg <- atomically $ readTChan msgs
+		case mmsg of
+			-- don't need to forkIO because we're not doing anything afterwards anyway
+			Nothing -> void $ deltaCallback Quit
+			Just msg -> do
+				-- We could use readTMVar/swapTMVar instead of takeTMVar/putTMVar
+				-- here to reduce the time we hold the lock. However, for cases that
+				-- read/alter mutable boards, we would need to be careful to hold the lock
+				-- while we accessed the boards, which would make it much more difficult to
+				-- separate concerns in the way handleMessages and handleMessage currently
+				-- does (namely: all concurrency-awareness in handleMessages, all
+				-- state-transition logic in handleMessage). Since holding the lock while
+				-- handling all message types -- not just the few that muck with boards --
+				-- is probably good enough in almost all cases, we do it the simple way.
+				iGameState <- atomically $ takeTMVar refGameState
+				(diagnostics, delta, iGameState') <- handleMessage iGameState msg
+				atomically $ do
+					mapM_ (writeTChan dbg) diagnostics
+					putTMVar refGameState iGameState'
+				traverse_ (forkIO . void . deltaCallback) delta
+				go
 
 -- TODO: WriterT [Diagnostic] IO IGameState?
 handleMessage :: IGameState -> R.ServerMessage -> IO ([Diagnostic], Maybe GameDelta, IGameState)
