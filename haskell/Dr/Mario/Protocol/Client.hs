@@ -31,6 +31,8 @@ import System.Environment
 import System.Directory
 import System.FilePath
 import System.Posix.Files
+import System.Posix.Process
+import System.Posix.Signals
 import System.IO
 import System.IO.Error
 import System.Process
@@ -170,11 +172,17 @@ initializeConnection rom server deltaCallback = do
 	case mconn of
 		Just conn -> return (conn, ph)
 		Nothing -> do
-			interruptProcessGroupOf ph
-			-- give it a polite second to finish up...
-			code <- timeout 1000000 (waitForProcess ph)
-			-- ...then be a bit less polite
-			when (isNothing code) (terminateProcess ph)
+			pids <- getPid ph
+			for_ pids $ \pid -> do
+				signalProcess sigINT pid
+				-- give it a polite second to finish up...
+				code <- timeout 1000000 (waitForProcess ph)
+				when (isNothing code) $ do
+					-- ...then an impatient second...
+					signalProcess sigTERM pid
+					code <- timeout 1000000 (waitForProcess ph)
+					-- ...then be a bit less polite
+					when (isNothing code) (signalProcess sigKILL pid)
 			fail "Version negotiation went south. Perhaps a diplomatic dialog should be opened between server and client authors."
 
 -- | @connectToHandles s2c c2s f@ initializes a connection with a server.
