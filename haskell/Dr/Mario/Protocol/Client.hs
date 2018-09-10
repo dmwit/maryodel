@@ -107,18 +107,27 @@ writeMsgs h dbg msgs = do
 readMsgs :: Handle -> TChan Diagnostic -> TChan R.ServerMessage -> IO ()
 readMsgs h dbg msgs = do
 	hSetBuffering h LineBuffering
-	go
+	atomically (goBS mempty) >>= goPartial
 	where
-	go = do
-		bs <- BS.hGetLine h
-		atomically $ case A.parse R.parse bs of
-			Fail rest cxts err -> writeTChan dbg (ParseFailure bs rest cxts err)
-			Partial f -> writeTChan dbg (ImpossibleIncompleteParse bs)
-			Done rest (msg, warnings) -> do
-				writeTChan msgs msg
-				unless (rest == mempty) (writeTChan dbg (ImpossiblePartialParse bs rest))
-				mapM_ (writeTChan dbg . ParseWarning) warnings
-		go
+	goPartial (f, bs) = do
+		bs1 <- BS.hGet h 1
+		bs2 <- BS.hGetNonBlocking h 8191
+		let bs' = bs1 <> bs2
+		-- TODO: if the server stops writing and shuts down the handle, let's
+		-- indicate that to the downstream consumer
+		fbs' <- atomically $ goResult (bs <> bs') (f bs')
+		goPartial fbs'
+
+	goResult bs (Fail rest cxts err) = do
+		writeTChan dbg (ParseFailure bs rest cxts err)
+		goBS . BS.drop 1 . BS.dropWhile (R.messageSeparator/=) $ rest
+	goResult bs (Partial f) = return (f, bs)
+	goResult bs (Done rest (msg, warnings)) = do
+		writeTChan msgs msg
+		mapM_ (writeTChan dbg . ParseWarning) warnings
+		goBS rest
+
+	goBS bs = goResult bs (A.parse R.parse bs)
 
 stderrDiagnostics :: TChan Diagnostic -> IO ()
 stderrDiagnostics dbg = forever (atomically (readTChan dbg) >>= hPrint stderr)
