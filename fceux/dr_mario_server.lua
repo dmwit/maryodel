@@ -38,6 +38,8 @@ if not c2s_fd then
 end
 
 local c2s_coroutine = coroutine.create(function()
+	-- TODO: the spec says we're supposed to truncate long messages, not
+	-- discard them
 	local pending = ''
 	local discarding = false
 	local MAX_MESSAGE_LEN = 8192
@@ -169,8 +171,7 @@ local function bcd_decode(byte)
 end
 
 local function max_virus_count(level)
-	if level <= 20 then level = level+1 end
-	return level*4
+	return math.min(level+1,21)*4
 end
 
 local Player = {}
@@ -199,6 +200,7 @@ function Player.new(addrs, id)
 		, create_winner_callback = Player.create_winner_callback
 		, create_loser_callback = Player.create_loser_callback
 		}
+	-- TODO: unregister these at an appropriate time
 	memory.registerwrite(addrs.board, 2*BOARD_WIDTH, self:create_garbage_callback())
 	memory.registerwrite(addrs.virus_count, 1, self:create_winner_callback())
 	memory.registerwrite(addrs.pill_x, 1, self:create_loser_callback())
@@ -358,6 +360,10 @@ end
 --
 -- That heuristic should be sufficient, but just for fun, we strengthen (3) to
 -- be simply "There was no write in the second row.".
+--
+-- TODO: Double-check that this heuristic works correctly when placing a
+-- vertical pill in the top row (hence disconnecting and discarding the
+-- off-the-screen half of the pill).
 function Player.create_garbage_callback(self)
 	return function(addr, size)
 		if size ~= 1 then
@@ -377,10 +383,6 @@ function Player.create_garbage_callback(self)
 	end
 end
 
--- TODO: This is totally incorrect. The pill x and y coordinates get reset to
--- 3,15 before cleanup is finished, so this will frequently incorrectly declare
--- a loser: whenever 3,15 or 4,15 are occupied at pill lock time but a match
--- causes them to be emptied.
 function Player.create_winner_callback(self)
 	return function(addr, size)
 		if memory.readbyte(addr) == 0 and self.mode == PLAYER_MODE.cleanup and playing then
@@ -391,6 +393,10 @@ function Player.create_winner_callback(self)
 	end
 end
 
+-- TODO: This is totally incorrect. The pill x and y coordinates get reset to
+-- 3,15 before cleanup is finished, so this will frequently incorrectly declare
+-- a loser: whenever 3,15 or 4,15 are occupied at pill lock time but a match
+-- causes them to be emptied.
 function Player.create_loser_callback(self)
 	return function(addr, size)
 		if self.mode == PLAYER_MODE.cleanup and playing and
