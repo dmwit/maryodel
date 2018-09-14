@@ -433,6 +433,14 @@ local function send_messages(before)
 	end
 
 	if before and (board_mode == BOARD_MODE.game or board_mode == BOARD_MODE.prep) then
+		local placing_viruses = false
+		for _, player in ipairs(players) do
+			placing_viruses = placing_viruses or player.mode == PLAYER_MODE.virus_placement
+		end
+		if playing and not placing_viruses then
+			o('frame ' .. emu.framecount())
+		end
+
 		for _, player in ipairs(players) do
 			player:update()
 		end
