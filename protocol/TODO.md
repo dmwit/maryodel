@@ -17,3 +17,11 @@
     has to track them all anyway. Being honest about that -- and about the fact
     that the client commands are only allowed when `you` are in certain states
     -- would probably be good.
+
+*   Suppose a client sent lots of state-request messages for the same frame or
+    mode transition before the server can respond once. What should the
+    server's behavior be like? If it rejects them, should it be required to
+    send multiple rejection messages? (I guess yes?) If it accepts, should it
+    be required to send the state information multiple times? (I guess no?)
+
+*   Is the server allowed to send `state` messages for players that have lost?
