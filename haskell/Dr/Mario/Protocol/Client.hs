@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ViewPatterns #-}
 module Dr.Mario.Protocol.Client
@@ -9,6 +10,8 @@ module Dr.Mario.Protocol.Client
 	, PlayerState(..)
 	, ModeState(..)
 	, Response(..)
+	, R.StateRequestTime(..)
+	, Word32
 	) where
 
 import Control.Concurrent
@@ -26,6 +29,7 @@ import Data.Maybe
 import Data.Monoid
 import Data.Foldable
 import Data.Map (Map)
+import Data.Set (Set)
 import Data.Word
 import System.Environment
 import System.Directory
@@ -43,6 +47,7 @@ import qualified Data.ByteString as BS
 import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Map.Strict as M
+import qualified Data.Set as S
 
 import Dr.Mario.Model
 import qualified Dr.Mario.Protocol.Raw as R
@@ -75,12 +80,9 @@ data Diagnostic
 	-- count this as a unique player for the purposes of switching from the
 	-- @game_setup@ to @cleanup@ state.
 	| MissingYou !(Map R.PlayerIdentifier PlayerState)
-	-- TODO: maybe don't throw away the 'R.PlayerIdentifier' we chose for @you@
-
-	-- ^ We've seen the right number of players to switch from @game_setup@ to
-	-- @cleanup@, but none of them were @you@. We've arbitrarily picked one to
-	-- act as @you@ (and subsequently forgotten the 'R.PlayerIdentifier' the
-	-- server actually used for that player... this isn't likely to end well).
+	-- ^ We're switching from @game_setup@ to @cleanup@, but none of the
+	-- players we've seen so far were @you@. We've arbitrarily picked one to
+	-- act as @you@.
 	| ExtraControlState !Word32 !Pill
 	-- ^ The server sent a @state ... control ...@ message instead of a @state
 	-- ... cleanup@ message during the @game_setup@ or @game_setup_zero@
@@ -89,6 +91,13 @@ data Diagnostic
 	-- ^ The server sent a @control@ or @queue@ reply, but either for an
 	-- 'R.Identifier' we never made a request for or for an 'R.Identifier' it
 	-- had already replied to. We ignored it.
+	| UnknownFrame !R.Word32 !(Response ())
+	-- ^ The server rejected a @state-request@, but the frame it refused to
+	-- report a state on doesn't match any of the frames we made requests
+	-- about. We ignored the rejection.
+	| UnknownPlayer !R.PlayerIdentifier
+	-- ^ The server sent a message about a player that wasn't mentioned during
+	-- game setup. We took it in stride the best we could.
 	deriving (Eq, Ord, Read, Show)
 
 writeMsgs :: Handle -> TChan Diagnostic -> TChan R.ClientMessage -> IO ()
@@ -303,16 +312,36 @@ currentGameState conn = atomically (readTMVar (refGameState conn)) >>= freezeGam
 -- be called exactly once.
 control :: Connection -> Word32 -> [R.ButtonPress] -> (Response () -> IO a) -> IO ()
 control conn frame bps callback_ = do
-	let callback = void . callback_
+	let callback = void . forkIO . void . callback_
 	igs <- atomically $ takeTMVar (refGameState conn)
-	(igs', discarded) <- case igs of
-		IInProgress cbControl n ips m -> do
+	case igs of
+		IInProgress cbControl cbQueue cbState stateIDs youMode frame players -> do
 			let (ident, cbControl') = fresh callback cbControl
-			atomically $ writeTChan (chanToServer conn) (R.Control ident frame bps)
-			return (IInProgress cbControl' n ips m, False)
-		_ -> return (igs, True)
-	atomically $ putTMVar (refGameState conn) igs'
-	when discarded (void . forkIO $ callback Discarded)
+			atomically $ do
+				writeTChan (chanToServer conn) (R.Control ident frame bps)
+				putTMVar (refGameState conn)
+				         (IInProgress cbControl' cbQueue cbState stateIDs youMode frame players)
+		_ -> do
+			atomically $ putTMVar (refGameState conn) igs
+			callback Discarded
+
+-- | Start pressing buttons next time we enter control mode (and discard any
+-- previously button presses previously scheduled for that transition). The
+-- callback supplied will be called exactly once.
+queue :: Connection -> [R.ButtonPress] -> (Response () -> IO a) -> IO ()
+queue conn bps callback_ = do
+	let callback = void . forkIO . void . callback_
+	igs <- atomically $ takeTMVar (refGameState conn)
+	case igs of
+		IInProgress cbControl cbQueue cbState stateIDs youMode frame players -> do
+			let (ident, cbQueue') = fresh callback cbQueue
+			atomically $ do
+				writeTChan (chanToServer conn) (R.Queue ident bps)
+				putTMVar (refGameState conn)
+				         (IInProgress cbControl cbQueue' cbState stateIDs youMode frame players)
+		_ -> do
+			atomically $ putTMVar (refGameState conn) igs
+			callback Discarded
 
 -- | The protocol's @version_proposal@ and @version_selection@ states are not
 -- represented here; the connection initialization methods don't return until
@@ -337,6 +366,7 @@ data GameDelta
 	= GameStarted !PlayerState !(Map R.Identifier PlayerState)
 	| Winner !R.PlayerIdentifier
 	| Quit -- ^ The server stopped sending messages. This is the end, folks.
+	| State !R.PlayerIdentifier !PlayerState
 	deriving (Eq, Ord, Read, Show)
 
 data PlayerState = PlayerState
@@ -363,6 +393,10 @@ data ProtocolState
 	| ControlState
 	deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
+protocolStateFromModeState :: ModeState -> ProtocolState
+protocolStateFromModeState Cleanup{} = CleanupState
+protocolStateFromModeState Control{} = ControlState
+
 -- | The internal version of the 'GameState', that includes extra stuff we need
 -- to track to get the protocol right, mutable versions of the board for
 -- efficiency, and so forth.
@@ -370,18 +404,30 @@ data ProtocolState
 -- Extra fields come first.
 data IGameState
 	= ISetup !(Map R.Identifier IPlayerState)
-	| IInProgress !CallbackMap
-	              !Word32 !IPlayerState !(Map R.Identifier IPlayerState)
-	-- ^ Extra field: callbacks for @control@ messages
+	| IInProgress !UnitCallbackMap !UnitCallbackMap !StateCallbackMap !(Set R.Identifier) (Maybe YouMode)
+	              !Word32 !(Map R.Identifier IPlayerState)
+	-- ^ Extra fields:
+	--
+	-- * callbacks for @control@ messages
+	-- * callbacks for @queue@ messages
+	-- * callbacks for @state@ messages
+	-- * players we've seen a @state@ message for this frame
+	-- * whether we've seen a @mode you@ message this frame
+	--
+	-- Unlike 'InProgress', we store @you@ in the final field and select it out
+	-- when it's time to freeze.
+
+data YouMode = YouControl | YouCleanup deriving (Eq, Ord, Read, Show)
 
 data Response a
 	= Accept !a -- ^ The server accepted your request, and replied with the data included here
 	| Far -- ^ The server rejected your request because it was for a time too far in the future
 	| Old -- ^ The server rejected your request because it was about the past
-	| Discarded -- ^ The server discarded your request because the conditions of the request didn't come up before the game ended
-	deriving (Eq, Ord, Read, Show)
+	| Discarded -- ^ The server discarded your request because the conditions of the request didn't come up before the game ended, or we didn't even bother sending the request because it wasn't appropriate at that point in the protocol
+	deriving (Eq, Ord, Read, Show, Functor)
 
-type CallbackMap = IdentifierMap (Response () -> IO ())
+type UnitCallbackMap = IdentifierMap (Response () -> IO ())
+type StateCallbackMap = Map R.StateRequestTime [Response (Map R.Identifier PlayerState) -> IO ()]
 
 -- | A type for creating fresh 'R.Identifier's and associating them with
 -- values.
@@ -402,7 +448,7 @@ fresh a m = (ident, m
 	ident = identifierFromWord (nextIdent m)
 
 discharge :: IdentifierMap a -> R.Identifier -> Maybe (a, IdentifierMap a)
-discharge m k = case M.updateLookupWithKey (\_ _ -> Nothing) k (callbacks m) of
+discharge m k = case M.updateLookupWithKey def k (callbacks m) of
 	(Nothing, _) -> Nothing
 	(Just a, callbacks') -> Just (a, m { callbacks = callbacks' })
 
@@ -432,7 +478,7 @@ data IPlayerState = IPlayerState
 -- (anything, as long as it's a consistent choice), unless there's nothing
 -- there, in which case 'Nothing' is there.
 selectYou :: Map R.Identifier a -> Maybe ((R.Identifier, a), Map R.Identifier a)
-selectYou m = case M.updateLookupWithKey (\_ _ -> Nothing) R.you m of
+selectYou m = case M.updateLookupWithKey def R.you m of
 	(Just v, m') -> Just ((R.you, v), m')
 	_ -> M.minViewWithKey m
 
@@ -466,7 +512,9 @@ thawPlayerState ps = do
 
 freezeGameState :: IGameState -> IO GameState
 freezeGameState (ISetup m) = Setup <$> traverse freezePlayerState m
-freezeGameState (IInProgress _ n ips m) = InProgress n <$> freezePlayerState ips <*> traverse freezePlayerState m
+freezeGameState (IInProgress _ _ _ _ _ frame players) = case selectYou players of
+	Just ((_, ips), players') -> InProgress frame <$> freezePlayerState ips <*> traverse freezePlayerState players'
+	_ -> fail "The impossible happened: freezeGameState was called with an empty player map."
 
 handleMessages :: TChan Diagnostic -> TMVar IGameState -> TChan (Maybe R.ServerMessage) -> (GameDelta -> IO a) -> IO ()
 handleMessages dbg refGameState msgs deltaCallback = go where
@@ -511,30 +559,92 @@ handleMessage (ISetup players) (R.State player dropFrames pill initialBoard mode
 
 	return (diagnostics, Nothing, ISetup players')
 
-handleMessage (ISetup (selectYou -> Just ((you, ips), players))) (R.Frame n) = do
+handleMessage (ISetup players@(selectYou -> Just ((you, ips), opponents))) (R.Frame frame) = do
 	frozenYou <- freezePlayerState ips
-	frozenOpponents <- traverse freezePlayerState players
+	frozenOpponents <- traverse freezePlayerState opponents
 	return
 		( [MissingYou (M.insert you frozenYou frozenOpponents) | you /= R.you]
 		, Just (GameStarted frozenYou frozenOpponents)
-		, IInProgress def n ips players
+		, IInProgress def def def def def frame players
 		)
 
 handleMessage igs@(ISetup players) msg = return ([IllegalMessage protocolState msg], Nothing, igs) where
 	protocolState = if M.size players == 0 then GameSetupZeroState else GameSetupState
 
-handleMessage igs@(IInProgress cbControl n ips m) msg = case msg of
+handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame players) msg = case msg of
 	R.AcceptControl id -> triggerControlCallback id (Accept ())
 	R.FarControl    id -> triggerControlCallback id Far
 	R.OldControl    id -> triggerControlCallback id Old
-
+	R.AcceptQueue   id -> triggerQueueCallback   id (Accept ())
+	R.FarState frame   -> triggerStateCallback frame Far
+	R.OldState frame   -> triggerStateCallback frame Old
+	R.State player drop lookahead b s -> case M.lookup player players of
+		Just ips -> do
+			let ps = PlayerState
+			    	{ dropRate = drop
+			    	, pillLookahead = lookahead
+			    	, board = b
+			    	, mode = case s of
+			    		R.CleanupState -> Cleanup
+			    		R.ControlState framesLeft pill -> Control (frame+framesLeft) pill
+			    	, dead = iDead ips
+			    	}
+			ips' <- thawPlayerState ps
+			let players' = M.insert player ips' players
+			    stateIDs' = S.insert player stateIDs
+			igs' <- handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs' youMode frame players')
+			return ([], Just (State player ps), igs')
+		Nothing -> return ([IllegalMessage protocolState msg], Nothing, igs)
+		where
+		protocolState = case selectYou players of
+			Just ((_, you), _) -> protocolStateFromModeState (iMode you)
+			_ -> ControlState -- WTF, how this happen
+	R.Winner player -> do
+		traverse_ ($Discarded) (callbacks cbControl)
+		traverse_ ($Discarded) (callbacks cbQueue)
+		traverse_ (traverse_ ($Discarded)) cbState
+		return ( [UnknownPlayer player | M.notMember player players]
+		       , Just (Winner player)
+		       , ISetup def
+		       )
 	where
-
 	triggerControlCallback id resp = case discharge cbControl id of
 		Just (callback, cbControl') -> do
-			forkIO (callback resp)
-			return ([], Nothing, IInProgress cbControl' n ips m)
+			callback resp
+			return ([], Nothing, IInProgress cbControl' cbQueue cbState stateIDs youMode frame players)
 		Nothing -> return ([UnknownID msg], Nothing, igs)
 
-discardAll :: IdentifierMap (Response a -> IO ()) -> IO ()
-discardAll m = traverse_ ($Discarded) (callbacks m)
+	triggerQueueCallback id resp = case discharge cbQueue id of
+		Just (callback, cbQueue') -> do
+			callback resp
+			return ([], Nothing, IInProgress cbControl cbQueue' cbState stateIDs youMode frame players)
+		Nothing -> return ([UnknownID msg], Nothing, igs)
+
+	triggerStateCallback frame resp = case M.lookup (R.AtFrame frame) cbState of
+		Just (cb:cbs) -> do
+			cb resp
+			let cbState' = M.insert (R.AtFrame frame) cbs cbState
+			return ([], Nothing, IInProgress cbControl cbQueue cbState' stateIDs youMode frame players)
+		_ -> return ([UnknownFrame frame (void resp)], Nothing, igs)
+
+handleStateCallbacks :: IGameState -> IO IGameState
+handleStateCallbacks igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame players)
+	| M.null (M.withoutKeys livePlayers stateIDs) = do
+		cbState' <- return
+			>=> handleTime (R.AtFrame frame)
+			>=> handleTime R.Immediately
+			>=> case youMode of
+				Nothing -> return
+				Just YouControl -> handleTime R.NextControlMode
+				Just YouCleanup -> handleTime R.NextCleanupMode
+			$ cbState
+		return (IInProgress cbControl cbQueue cbState' stateIDs youMode frame players)
+	where
+	livePlayers = M.filter (not . iDead) players
+	handleTime t s = case M.updateLookupWithKey def t s of
+		(Nothing, _) -> return s
+		(Just cbs, s') -> do
+			frozen <- traverse freezePlayerState livePlayers
+			traverse_ ($Accept frozen) cbs
+			return s'
+handleStateCallbacks igs = return igs
