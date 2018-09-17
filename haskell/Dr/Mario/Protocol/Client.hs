@@ -28,6 +28,7 @@ import Data.List
 import Data.Maybe
 import Data.Monoid
 import Data.Foldable
+import Data.Functor.Compose
 import Data.Map (Map)
 import Data.Set (Set)
 import Data.Word
@@ -364,9 +365,12 @@ data GameState
 
 data GameDelta
 	= GameStarted !PlayerState !(Map R.Identifier PlayerState)
-	| Winner !R.PlayerIdentifier
-	| Quit -- ^ The server stopped sending messages. This is the end, folks.
 	| State !R.PlayerIdentifier !PlayerState
+	| Winner !R.PlayerIdentifier
+	| Loser !R.PlayerIdentifier
+	| ModeCleanup !R.PlayerIdentifier
+	| ModeControl !R.PlayerIdentifier !PillContent
+	| Quit -- ^ The server stopped sending messages. This is the end, folks.
 	deriving (Eq, Ord, Read, Show)
 
 data PlayerState = PlayerState
@@ -434,9 +438,10 @@ type StateCallbackMap = Map R.StateRequestTime [Response (Map R.Identifier Playe
 data IdentifierMap a = IdentifierMap
 	{ nextIdent :: !Word -- 2^30 identifiers ought to be enough for anybody
 	, callbacks :: !(Map R.Identifier a)
-	} deriving (Eq, Ord, Read, Show)
+	} deriving (Eq, Ord, Read, Show, Functor)
 
 instance Default (IdentifierMap a) where def = IdentifierMap def def
+instance Foldable IdentifierMap where foldMap f = foldMap f . callbacks
 
 -- | Associate a fresh identifier with a given value.
 fresh :: a -> IdentifierMap a -> (R.Identifier, IdentifierMap a)
@@ -510,6 +515,13 @@ thawPlayerState ps = do
 		, iDead = dead ps
 		}
 
+setMode :: (IPlayerState -> ModeState) -> IPlayerState -> IO IPlayerState
+setMode f ips = atomically $ do
+	let m = f ips
+	mps <- readTVar (iCachedFrozenState ips)
+	cache <- newTVar ((\ps -> ps { mode = m }) <$> mps)
+	return ips { iCachedFrozenState = cache, iMode = m }
+
 freezeGameState :: IGameState -> IO GameState
 freezeGameState (ISetup m) = Setup <$> traverse freezePlayerState m
 freezeGameState (IInProgress _ _ _ _ _ frame players) = case selectYou players of
@@ -578,6 +590,7 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 	R.AcceptQueue   id -> triggerQueueCallback   id (Accept ())
 	R.FarState frame   -> triggerStateCallback frame Far
 	R.OldState frame   -> triggerStateCallback frame Old
+
 	R.State player drop lookahead b s -> case M.lookup player players of
 		Just ips -> do
 			let ps = PlayerState
@@ -599,14 +612,31 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 		protocolState = case selectYou players of
 			Just ((_, you), _) -> protocolStateFromModeState (iMode you)
 			_ -> ControlState -- WTF, how this happen
+
 	R.Winner player -> do
-		traverse_ ($Discarded) (callbacks cbControl)
-		traverse_ ($Discarded) (callbacks cbQueue)
-		traverse_ (traverse_ ($Discarded)) cbState
+		discardAll cbControl cbQueue cbState
 		return ( [UnknownPlayer player | M.notMember player players]
 		       , Just (Winner player)
 		       , ISetup def
 		       )
+
+	R.Loser player -> do
+		let living = M.foldlWithKey' (\acc k v -> acc + if k == player || iDead v then 0 else 1) 0 players
+		    diagnostics = [UnknownPlayer player | M.notMember player players]
+		igs' <- if living < 2
+			then discardAll cbControl cbQueue cbState >> return (ISetup def)
+			else case M.updateLookupWithKey (\_ ips -> Just ips { iDead = True }) player players of
+				(Nothing, _) -> return igs
+				(Just{}, players') -> handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
+		return (diagnostics, Just (Loser player), igs')
+
+	R.ModeCleanup player -> setModeForPlayer player (\_ -> Cleanup) YouCleanup (ModeCleanup player)
+	R.ModeControl player lookahead -> setModeForPlayer
+		player
+		(\ips -> Control (frame + iDropRate ips) (Pill lookahead (Position { x = 3, y = 15 })))
+		YouControl
+		(ModeControl player lookahead)
+
 	where
 	triggerControlCallback id resp = case discharge cbControl id of
 		Just (callback, cbControl') -> do
@@ -626,6 +656,16 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 			let cbState' = M.insert (R.AtFrame frame) cbs cbState
 			return ([], Nothing, IInProgress cbControl cbQueue cbState' stateIDs youMode frame players)
 		_ -> return ([UnknownFrame frame (void resp)], Nothing, igs)
+
+	setModeForPlayer player fMode youMode' delta =
+		case M.alterF (\mips -> Compose (mips, traverse (setMode fMode) mips)) player players of
+			Compose (Nothing, _) -> return ([UnknownPlayer player], Nothing, igs)
+			Compose (Just{}, act) -> do
+				players' <- act
+				igs' <- if player == R.you
+					then handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs (Just youMode') frame players')
+					else return (IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
+				return ([], Just delta, igs')
 
 handleStateCallbacks :: IGameState -> IO IGameState
 handleStateCallbacks igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame players)
@@ -648,3 +688,9 @@ handleStateCallbacks igs@(IInProgress cbControl cbQueue cbState stateIDs youMode
 			traverse_ ($Accept frozen) cbs
 			return s'
 handleStateCallbacks igs = return igs
+
+discardAll :: UnitCallbackMap -> UnitCallbackMap -> StateCallbackMap -> IO ()
+discardAll cbControl cbQueue cbState = do
+	traverse_ ($Discarded) cbControl
+	traverse_ ($Discarded) cbQueue
+	traverse_ (traverse_ ($Discarded)) cbState
