@@ -1,3 +1,4 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 module Dr.Mario.Model
 	( Color(..)
 	, Shape(..)
@@ -17,7 +18,7 @@ module Dr.Mario.Model
 	, thaw, mfreeze, munsafeFreeze
 	, memptyBoard
 	, mwidth, mheight
-	, minfect
+	, minfect, mplace
 	) where
 
 import Control.Applicative
@@ -191,10 +192,12 @@ place board pill = case (placementValid, fastPathValid) of
 	-- There is no check on y2 here; either it's the same as y1, in which case
 	-- the check on y1 suffices, or it's different, in which case it's above y1
 	-- and allowed to be off the board anyway.
+	--
+	-- Similarly we need not check that x1 is too large or that x2 is too
+	-- small, because x1 <= x2.
 	placementValid :: Bool
 	placementValid
-		=  x1 >= 0 && x1 < width  board
-		&&            x2 < width  board
+		=  x1 >= 0 && x2 < width  board
 		&& y1 >= 0 && y1 < height board
 		&& unsafeGet board pos1 == Empty
 		&& (y2 >= height board || unsafeGet board pos2 == Empty)
@@ -242,23 +245,7 @@ place board pill = case (placementValid, fastPathValid) of
 
 	slowPath = runST $ do
 		mb <- thaw board
-		ps <- case orientation (content pill) of
-			Horizontal -> do
-				munsafeSet mb pos1 (Occupied (bottomLeftColor (content pill)) West)
-				munsafeSet mb pos2 (Occupied (     otherColor (content pill)) East)
-				return [pos1, pos2]
-			Vertical | y2Valid -> do
-				munsafeSet mb pos1 (Occupied (bottomLeftColor (content pill)) South)
-				munsafeSet mb pos2 (Occupied (     otherColor (content pill)) North)
-				return [pos1, pos2]
-			_ -> do
-				-- This is going to get cleared anyway, but making it
-				-- Disconnected instead of South (so that one could merge with
-				-- the previous case if desired) is good defensive programming.
-				munsafeSet mb pos1 (Occupied (bottomLeftColor (content pill)) Disconnected)
-				return [pos2]
-		ps <- unsafeClear mb ps
-		unsafeDropAndClear mb ps
+		munsafePlace mb pos1 pos2 (content pill)
 		munsafeFreeze mb
 
 -- | Drop 'Disconnected' pieces, in the columns given by the keys and of the
@@ -363,6 +350,61 @@ munsafeModify mb p f = do
 -- ensure this isn't needed.
 minfect :: PrimMonad m => MBoard (PrimState m) -> Position -> Color -> m ()
 minfect mb p col = mset mb p (Occupied col Virus)
+
+-- | Overwrite the cells under a 'Pill', then repeatedly clear four-in-a-rows
+-- and drop unsupported pieces. N.B. nothing will drop if nothing clears, so it
+-- is the caller's responsibility to ensure that the pill would be supported
+-- where it's being placed.
+--
+-- Does nothing if the 'Pill' is out of bounds or over a non-'Empty' cell.
+mplace :: forall m. PrimMonad m => MBoard (PrimState m) -> Pill -> m ()
+mplace mb pill = do
+	valid <- placementValid
+	when valid $ munsafePlace mb pos1 pos2 (content pill)
+	where
+	pos1@(Position x1 y1) = bottomLeftPosition pill
+	pos2@(Position x2 y2) =      otherPosition pill
+
+	-- We simplify the bounds checks with two assumptions: x1 <= x2, so we
+	-- don't need to check if x1 is too big or x2 too small, and y2<=y1+1 and
+	-- is allowed to be out of bounds by one, so it is a valid placement as
+	-- long as y1 is in bounds.
+	placementValid :: m Bool
+	placementValid =
+		       return (  x1 >= 0 && x2 < mwidth  mb
+		              && y1 >= 0 && y1 < mheight mb
+		              )
+		`andM` fmap (Empty==) (munsafeGet mb pos1)
+		`andM` if y2 < mheight mb
+		       then fmap (Empty==) (munsafeGet mb pos2)
+		       else return True
+
+	infixr 3 `andM`
+	andM :: m Bool -> m Bool -> m Bool
+	andM l r = do
+		v <- l
+		if v then r else return False
+
+-- | Doesn't check that the positions are sensible.
+munsafePlace :: PrimMonad m => MBoard (PrimState m) -> Position -> Position -> PillContent -> m ()
+munsafePlace mb pos1 pos2 pc = do
+	ps <- case orientation pc of
+		Horizontal -> do
+			munsafeSet mb pos1 (Occupied (bottomLeftColor pc) West)
+			munsafeSet mb pos2 (Occupied (     otherColor pc) East)
+			return [pos1, pos2]
+		Vertical | y pos2 < mheight mb -> do
+			munsafeSet mb pos1 (Occupied (bottomLeftColor pc) South)
+			munsafeSet mb pos2 (Occupied (     otherColor pc) North)
+			return [pos1, pos2]
+		_ -> do
+			-- This is going to get cleared anyway, but making it
+			-- Disconnected instead of South (so that one could merge with
+			-- the previous case if desired) is good defensive programming.
+			munsafeSet mb pos1 (Occupied (bottomLeftColor pc) Disconnected)
+			return [pos2]
+	ps <- unsafeClear mb ps
+	unsafeDropAndClear mb ps
 
 -- | @unsafeClear board positions@ takes a board and a collection of positions
 -- on the board which have recently changed, and modifies the board to take
