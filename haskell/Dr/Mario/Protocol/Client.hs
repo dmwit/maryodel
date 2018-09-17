@@ -370,6 +370,8 @@ data GameDelta
 	| ModeCleanup !R.PlayerIdentifier
 	| ModeControl !R.PlayerIdentifier !PillContent
 	| Frame !Word32
+	| PillChanged !R.PlayerIdentifier !Pill
+	| Speed !R.PlayerIdentifier !Word32
 	| Quit -- ^ The server stopped sending messages. This is the end, folks.
 	deriving (Eq, Ord, Read, Show)
 
@@ -585,6 +587,7 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 	R.AcceptQueue   id -> triggerQueueCallback   id (Accept ())
 	R.FarState frame   -> triggerStateCallback frame Far
 	R.OldState frame   -> triggerStateCallback frame Old
+	R.Frame frame -> return ([], Just (Frame frame), IInProgress cbControl cbQueue cbState def def frame players)
 
 	R.State player drop lookahead b s -> case M.lookup player players of
 		Just ips -> do
@@ -633,7 +636,13 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 		YouControl
 		(ModeControl player lookahead)
 
-	R.Frame frame' -> return ([], Just (Frame frame'), IInProgress cbControl cbQueue cbState def def frame' players)
+	R.Pill player pill -> case M.updateLookupWithKey (\_ -> Just . setPill pill) player players of
+		(Nothing, _) -> return ([UnknownPlayer player], Nothing, igs)
+		(Just{}, players') -> return ([], Just (PillChanged player pill), IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
+
+	R.Speed player dropRate -> case M.updateLookupWithKey (\_ ips -> Just ips { iDropRate = dropRate }) player players of
+		(Nothing, _) -> return ([UnknownPlayer player], Nothing, igs)
+		(Just{}, players') -> return ([], Just (Speed player dropRate), IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
 
 	where
 	triggerControlCallback id resp = case discharge cbControl id of
@@ -663,6 +672,17 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 					then handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs (Just youMode') frame players')
 					else return (IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
 				return ([], Just delta, igs')
+
+	setPill pill' ips = case iMode ips of
+		Cleanup -> ips
+		Control dropFrame pill -> ips
+			{ iMode = Control
+				(if y (bottomLeftPosition pill) == y (bottomLeftPosition pill')
+				 then dropFrame
+				 else frame + iDropRate ips
+				)
+				pill'
+			}
 
 handleStateCallbacks :: IGameState -> IO IGameState
 handleStateCallbacks igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame players)
