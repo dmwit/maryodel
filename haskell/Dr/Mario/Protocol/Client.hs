@@ -369,6 +369,7 @@ data GameDelta
 	| Loser !R.PlayerIdentifier
 	| ModeCleanup !R.PlayerIdentifier
 	| ModeControl !R.PlayerIdentifier !PillContent
+	| Frame !Word32
 	| Quit -- ^ The server stopped sending messages. This is the end, folks.
 	deriving (Eq, Ord, Read, Show)
 
@@ -630,6 +631,8 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 		(\ips -> Control (frame + iDropRate ips) (Pill lookahead (Position { x = 3, y = 15 })))
 		YouControl
 		(ModeControl player lookahead)
+
+	R.Frame frame' -> return ([], Just (Frame frame'), IInProgress cbControl cbQueue cbState def def frame' players)
 
 	where
 	triggerControlCallback id resp = case discharge cbControl id of
