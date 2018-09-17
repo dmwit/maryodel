@@ -625,6 +625,7 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 				(Just{}, players') -> handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
 		return (diagnostics, Just (Loser player), igs')
 
+	-- TODO: lock the pill...
 	R.ModeCleanup player -> setModeForPlayer player (\_ -> Cleanup) YouCleanup (ModeCleanup player)
 	R.ModeControl player lookahead -> setModeForPlayer
 		player
