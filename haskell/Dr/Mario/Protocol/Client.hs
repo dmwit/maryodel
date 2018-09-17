@@ -1,5 +1,4 @@
 {-# LANGUAGE DeriveFunctor #-}
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ViewPatterns #-}
 module Dr.Mario.Protocol.Client
 	( initializeConnection
@@ -471,7 +470,7 @@ identifierFromWord = R.unsafeIdentifier . LBS.toStrict . Builder.toLazyByteStrin
 			  | otherwise -> r+3
 
 data IPlayerState = IPlayerState
-	{ iCachedFrozenState :: TVar (Maybe PlayerState)
+	{ iCachedBoard :: TVar (Maybe Board)
 	, iDropRate :: !Word32
 	, iPillLookahead :: !PillContent
 	, iBoard :: !IOBoard
@@ -488,39 +487,34 @@ selectYou m = case M.updateLookupWithKey def R.you m of
 	_ -> M.minViewWithKey m
 
 freezePlayerState :: IPlayerState -> IO PlayerState
-freezePlayerState ips = readTVarIO (iCachedFrozenState ips) >>= \case
-	Just ps -> return ps
-	Nothing -> do
-		frozenBoard <- mfreeze (iBoard ips)
-		let playerState = PlayerState
-		    	{ dropRate = iDropRate ips
-		    	, pillLookahead = iPillLookahead ips
-		    	, board = frozenBoard
-		    	, mode = iMode ips
-		    	, dead = iDead ips
-		    	}
-		atomically $ writeTVar (iCachedFrozenState ips) (Just playerState)
-		return playerState
+freezePlayerState ips = do
+	mFrozenBoard <- readTVarIO (iCachedBoard ips)
+	frozenBoard <- case mFrozenBoard of
+		Just frozenBoard -> return frozenBoard
+		Nothing -> do
+			frozenBoard <- mfreeze (iBoard ips)
+			atomically $ writeTVar (iCachedBoard ips) (Just frozenBoard)
+			return frozenBoard
+	return PlayerState
+		{ dropRate = iDropRate ips
+		, pillLookahead = iPillLookahead ips
+		, board = frozenBoard
+		, mode = iMode ips
+		, dead = iDead ips
+		}
 
 thawPlayerState :: PlayerState -> IO IPlayerState
 thawPlayerState ps = do
-	cachedPlayerState <- newTVarIO (Just ps)
+	cachedBoard <- newTVarIO (Just (board ps))
 	iBoard <- thaw (board ps)
 	return IPlayerState
-		{ iCachedFrozenState = cachedPlayerState
+		{ iCachedBoard = cachedBoard
 		, iDropRate = dropRate ps
 		, iPillLookahead = pillLookahead ps
 		, iBoard = iBoard
 		, iMode = mode ps
 		, iDead = dead ps
 		}
-
-setMode :: (IPlayerState -> ModeState) -> IPlayerState -> IO IPlayerState
-setMode f ips = atomically $ do
-	let m = f ips
-	mps <- readTVar (iCachedFrozenState ips)
-	cache <- newTVar ((\ps -> ps { mode = m }) <$> mps)
-	return ips { iCachedFrozenState = cache, iMode = m }
 
 freezeGameState :: IGameState -> IO GameState
 freezeGameState (ISetup m) = Setup <$> traverse freezePlayerState m
@@ -658,10 +652,9 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 		_ -> return ([UnknownFrame frame (void resp)], Nothing, igs)
 
 	setModeForPlayer player fMode youMode' delta =
-		case M.alterF (\mips -> Compose (mips, traverse (setMode fMode) mips)) player players of
-			Compose (Nothing, _) -> return ([UnknownPlayer player], Nothing, igs)
-			Compose (Just{}, act) -> do
-				players' <- act
+		case M.updateLookupWithKey (\_ ips -> Just ips { iMode = fMode ips }) player players of
+			(Nothing, _) -> return ([UnknownPlayer player], Nothing, igs)
+			(Just{}, players') -> do
 				igs' <- if player == R.you
 					then handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs (Just youMode') frame players')
 					else return (IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
