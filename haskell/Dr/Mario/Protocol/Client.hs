@@ -98,6 +98,14 @@ data Diagnostic
 	| UnknownPlayer !R.PlayerIdentifier
 	-- ^ The server sent a message about a player that wasn't mentioned during
 	-- game setup. We took it in stride the best we could.
+	| IllegalPill !R.PlayerIdentifier !Pill
+	-- ^ The server sent a player to cleanup mode while their pill was off the
+	-- board or hovering over some existing stuff. We ignored the pill
+	-- placement, but did go ahead and enter cleanup mode. Things are very
+	-- likely to be out of sync now.
+	| DoubleCleanup !R.PlayerIdentifier
+	-- ^ The server sent a player to cleanup mode while they were already in
+	-- cleanup mode. Weird.
 	deriving (Eq, Ord, Read, Show)
 
 writeMsgs :: Handle -> TChan Diagnostic -> TChan R.ClientMessage -> IO ()
@@ -606,10 +614,6 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 			igs' <- handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs' youMode frame players')
 			return ([], Just (State player ps), igs')
 		Nothing -> return ([IllegalMessage protocolState msg], Nothing, igs)
-		where
-		protocolState = case selectYou players of
-			Just ((_, you), _) -> protocolStateFromModeState (iMode you)
-			_ -> ControlState -- WTF, how this happen
 
 	R.Winner player -> do
 		discardAll cbControl cbQueue cbState
@@ -620,29 +624,48 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 
 	R.Loser player -> do
 		let living = M.foldlWithKey' (\acc k v -> acc + if k == player || iDead v then 0 else 1) 0 players
-		    diagnostics = [UnknownPlayer player | M.notMember player players]
-		igs' <- if living < 2
-			then discardAll cbControl cbQueue cbState >> return (ISetup def)
-			else case M.updateLookupWithKey (\_ ips -> Just ips { iDead = True }) player players of
-				(Nothing, _) -> return igs
-				(Just{}, players') -> handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
-		return (diagnostics, Just (Loser player), igs')
+		case M.updateLookupWithKey (\_ ips -> Just ips { iDead = True }) player players of
+			_ | living < 2 -> do
+				discardAll cbControl cbQueue cbState
+				let diagnostics = [UnknownPlayer player | M.notMember player players]
+				return (diagnostics, Just (Loser player), ISetup def)
+			(Nothing, _) -> return ([IllegalMessage protocolState msg], Nothing, igs)
+			(_, players') -> do
+				igs' <- handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
+				return ([], Just (Loser player), igs')
 
-	-- TODO: lock the pill...
-	R.ModeCleanup player -> setModeForPlayer player (\_ -> Cleanup) YouCleanup (ModeCleanup player)
-	R.ModeControl player lookahead -> setModeForPlayer
-		player
-		(\ips -> Control (frame + iDropRate ips) (Pill lookahead (Position { x = 3, y = 15 })))
-		YouControl
-		(ModeControl player lookahead)
+	R.ModeCleanup player -> case M.lookup player players of
+		Just ips -> case iMode ips of
+			Control _ pill -> do
+				success <- mplace (iBoard ips) pill
+				when success . atomically $ writeTVar (iCachedBoard ips) Nothing
+				let players' = M.insert player ips { iMode = Cleanup } players
+				    youMode' = if player == R.you then Just YouCleanup else youMode
+				igs' <- if player == R.you
+					then handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs (Just YouCleanup) frame players')
+					else return (IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
+				return ( [IllegalPill player pill | not success]
+				       , Just (ModeCleanup player)
+				       , igs'
+				       )
+			Cleanup -> return ([DoubleCleanup player], Nothing, igs)
+		Nothing -> return ([IllegalMessage protocolState msg], Nothing, igs)
 
-	R.Pill player pill -> case M.updateLookupWithKey (\_ -> Just . setPill pill) player players of
-		(Nothing, _) -> return ([UnknownPlayer player], Nothing, igs)
-		(Just{}, players') -> return ([], Just (PillChanged player pill), IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
+	R.ModeControl player lookahead -> case M.updateLookupWithKey (\_ -> Just . enterControlMode lookahead) player players of
+		(Nothing, _) -> return ([IllegalMessage protocolState msg], Nothing, igs)
+		(_, players') -> do
+			igs' <- if player == R.you
+				then handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs (Just YouControl) frame players')
+				else return (IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
+			return ([], Just (ModeControl player lookahead), igs')
 
-	R.Speed player dropRate -> case M.updateLookupWithKey (\_ ips -> Just ips { iDropRate = dropRate }) player players of
-		(Nothing, _) -> return ([UnknownPlayer player], Nothing, igs)
-		(Just{}, players') -> return ([], Just (Speed player dropRate), IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
+	R.Pill player pill -> return $ case M.updateLookupWithKey (\_ -> Just . setPill pill) player players of
+		(Nothing, _) -> ([IllegalMessage protocolState msg], Nothing, igs)
+		(_, players') -> ([], Just (PillChanged player pill), IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
+
+	R.Speed player dropRate -> return $ case M.updateLookupWithKey (\_ ips -> Just ips { iDropRate = dropRate }) player players of
+		(Nothing, _) -> ([IllegalMessage protocolState msg], Nothing, igs)
+		(_, players') -> ([], Just (Speed player dropRate), IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
 
 	where
 	triggerControlCallback id resp = case discharge cbControl id of
@@ -664,15 +687,6 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 			return ([], Nothing, IInProgress cbControl cbQueue cbState' stateIDs youMode frame players)
 		_ -> return ([UnknownFrame frame (void resp)], Nothing, igs)
 
-	setModeForPlayer player fMode youMode' delta =
-		case M.updateLookupWithKey (\_ ips -> Just ips { iMode = fMode ips }) player players of
-			(Nothing, _) -> return ([UnknownPlayer player], Nothing, igs)
-			(Just{}, players') -> do
-				igs' <- if player == R.you
-					then handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs (Just youMode') frame players')
-					else return (IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
-				return ([], Just delta, igs')
-
 	setPill pill' ips = case iMode ips of
 		Cleanup -> ips
 		Control dropFrame pill -> ips
@@ -683,6 +697,14 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 				)
 				pill'
 			}
+
+	enterControlMode lookahead ips = ips
+		{ iMode = Control (frame + iDropRate ips) (Pill lookahead Position { x = 3, y = 15 })
+		}
+
+	protocolState = case selectYou players of
+		Just ((_, you), _) -> protocolStateFromModeState (iMode you)
+		_ -> ControlState -- WTF, how this happen
 
 handleStateCallbacks :: IGameState -> IO IGameState
 handleStateCallbacks igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame players)

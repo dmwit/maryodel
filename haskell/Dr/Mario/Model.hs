@@ -356,11 +356,13 @@ minfect mb p col = mset mb p (Occupied col Virus)
 -- is the caller's responsibility to ensure that the pill would be supported
 -- where it's being placed.
 --
--- Does nothing if the 'Pill' is out of bounds or over a non-'Empty' cell.
-mplace :: forall m. PrimMonad m => MBoard (PrimState m) -> Pill -> m ()
+-- Returns 'False' (and does nothing else) if the 'Pill' is out of bounds or
+-- over a non-'Empty' cell; otherwise returns 'True'.
+mplace :: forall m. PrimMonad m => MBoard (PrimState m) -> Pill -> m Bool
 mplace mb pill = do
 	valid <- placementValid
 	when valid $ munsafePlace mb pos1 pos2 (content pill)
+	return valid
 	where
 	pos1@(Position x1 y1) = bottomLeftPosition pill
 	pos2@(Position x2 y2) =      otherPosition pill
