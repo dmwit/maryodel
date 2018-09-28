@@ -613,7 +613,7 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 			    stateIDs' = S.insert player stateIDs
 			igs' <- handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs' youMode frame players')
 			return ([], Just (State player ps), igs')
-		Nothing -> return ([IllegalMessage protocolState msg], Nothing, igs)
+		Nothing -> illegalM
 
 	R.Winner player -> do
 		discardAll cbControl cbQueue cbState
@@ -629,7 +629,7 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 				discardAll cbControl cbQueue cbState
 				let diagnostics = [UnknownPlayer player | M.notMember player players]
 				return (diagnostics, Just (Loser player), ISetup def)
-			(Nothing, _) -> return ([IllegalMessage protocolState msg], Nothing, igs)
+			(Nothing, _) -> illegalM
 			(_, players') -> do
 				igs' <- handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
 				return ([], Just (Loser player), igs')
@@ -649,10 +649,10 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 				       , igs'
 				       )
 			Cleanup -> return ([DoubleCleanup player], Nothing, igs)
-		Nothing -> return ([IllegalMessage protocolState msg], Nothing, igs)
+		Nothing -> illegalM
 
 	R.ModeControl player lookahead -> case M.updateLookupWithKey (\_ -> Just . enterControlMode lookahead) player players of
-		(Nothing, _) -> return ([IllegalMessage protocolState msg], Nothing, igs)
+		(Nothing, _) -> illegalM
 		(_, players') -> do
 			igs' <- if player == R.you
 				then handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs (Just YouControl) frame players')
@@ -660,11 +660,11 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 			return ([], Just (ModeControl player lookahead), igs')
 
 	R.Pill player pill -> return $ case M.updateLookupWithKey (\_ -> Just . setPill pill) player players of
-		(Nothing, _) -> ([IllegalMessage protocolState msg], Nothing, igs)
+		(Nothing, _) -> illegal
 		(_, players') -> ([], Just (PillChanged player pill), IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
 
 	R.Speed player dropRate -> return $ case M.updateLookupWithKey (\_ ips -> Just ips { iDropRate = dropRate }) player players of
-		(Nothing, _) -> ([IllegalMessage protocolState msg], Nothing, igs)
+		(Nothing, _) -> illegal
 		(_, players') -> ([], Just (Speed player dropRate), IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
 
 	where
@@ -705,6 +705,9 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 	protocolState = case selectYou players of
 		Just ((_, you), _) -> protocolStateFromModeState (iMode you)
 		_ -> ControlState -- WTF, how this happen
+
+	illegal = ([IllegalMessage protocolState msg], Nothing, igs)
+	illegalM = return illegal
 
 handleStateCallbacks :: IGameState -> IO IGameState
 handleStateCallbacks igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame players)
