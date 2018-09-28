@@ -709,14 +709,13 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 handleStateCallbacks :: IGameState -> IO IGameState
 handleStateCallbacks igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame players)
 	| M.null (M.withoutKeys livePlayers stateIDs) = do
-		cbState' <- return
-			>=> handleTime (R.AtFrame frame)
-			>=> handleTime R.Immediately
-			>=> case youMode of
+		cbState' <- return cbState
+			>>= handleTime (R.AtFrame frame)
+			>>= handleTime R.Immediately
+			>>= case youMode of
 				Nothing -> return
 				Just YouControl -> handleTime R.NextControlMode
 				Just YouCleanup -> handleTime R.NextCleanupMode
-			$ cbState
 		return (IInProgress cbControl cbQueue cbState' stateIDs youMode frame players)
 	where
 	livePlayers = M.filter (not . iDead) players
