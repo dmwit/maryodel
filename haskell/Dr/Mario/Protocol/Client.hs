@@ -380,6 +380,7 @@ data GameDelta
 	| Frame !Word32
 	| PillChanged !R.PlayerIdentifier !Pill
 	| Speed !R.PlayerIdentifier !Word32
+	| Garbage !R.PlayerIdentifier !(Map Int Color)
 	| Quit -- ^ The server stopped sending messages. This is the end, folks.
 	deriving (Eq, Ord, Read, Show)
 
@@ -666,6 +667,18 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 	R.Speed player dropRate -> return $ case M.updateLookupWithKey (\_ ips -> Just ips { iDropRate = dropRate }) player players of
 		(Nothing, _) -> illegal
 		(_, players') -> ([], Just (Speed player dropRate), IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
+
+	R.Garbage player cs -> case M.lookup player players of
+		Nothing -> illegalM
+		Just ips -> do
+			success <- mgarbage (iBoard ips) cs
+			if success then do
+				atomically $ writeTVar (iCachedBoard ips) Nothing
+				return ([], Just (Garbage player cs), igs)
+			else illegalM
+
+	R.ProposeVersion{} -> illegalM
+	R.RequestVersion{} -> illegalM
 
 	where
 	triggerControlCallback id resp = case discharge cbControl id of
