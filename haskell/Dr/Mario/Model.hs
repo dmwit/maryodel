@@ -18,7 +18,7 @@ module Dr.Mario.Model
 	, thaw, mfreeze, munsafeFreeze
 	, memptyBoard
 	, mwidth, mheight
-	, minfect, mplace
+	, minfect, mplace, mgarbage
 	) where
 
 import Control.Applicative
@@ -254,19 +254,11 @@ place board pill = case (placementValid, fastPathValid) of
 garbage :: Board -> Map Int Color -> Maybe Board
 garbage board pieces | M.size pieces <= 0 = return board -- uh...
 garbage board pieces = do
-	let (x , _) = M.findMin pieces
-	    (x', _) = M.findMax pieces
-	guard (x >= 0 && x' < width board)
+	guard (unsafeGarbageInBounds (width board) pieces)
 	return $ runST $ do
 		mb <- thaw board
-		ps <- M.traverseWithKey (go mb) pieces
-		unsafeDropAndClear mb ps
+		munsafeGarbage mb pieces
 		munsafeFreeze mb
-	where
-	go mb = let y = mheight mb - 1 in \x col -> do
-		let p = Position x y
-		munsafeSet mb p (Occupied col Disconnected)
-		return p
 
 data MBoard s = MBoard
 	{ mwidth, mheight :: !Int
@@ -407,6 +399,32 @@ munsafePlace mb pos1 pos2 pc = do
 			return [pos2]
 	ps <- unsafeClear mb ps
 	unsafeDropAndClear mb ps
+
+-- | Drop 'Disconnected' pieces, in the columns given by the keys and of the
+-- colors given by the values. Returns 'False' (without changing the board) if
+-- any column is out of bounds, 'True' otherwise.
+mgarbage :: PrimMonad m => MBoard (PrimState m) -> Map Int Color -> m Bool
+mgarbage mb pieces | M.size pieces <= 0 = return True -- uh...
+mgarbage mb pieces = if unsafeGarbageInBounds (mwidth mb) pieces
+	then True <$ munsafeGarbage mb pieces
+	else return False
+
+-- | Check if the given collection of columns is between 0 and the width given
+-- by the first argument. Assumes that the collection of columns is nonempty.
+unsafeGarbageInBounds :: Int -> Map Int Color -> Bool
+unsafeGarbageInBounds w pieces = x >= 0 && x' < w where
+	(x , _) = M.findMin pieces
+	(x', _) = M.findMax pieces
+
+-- | Doesn't check that the columns are in-bounds.
+munsafeGarbage :: PrimMonad m => MBoard (PrimState m) -> Map Int Color -> m ()
+munsafeGarbage mb pieces = do
+	ps <- M.traverseWithKey go pieces
+	unsafeDropAndClear mb ps
+	where
+	y = mheight mb - 1
+	go x col = p <$ munsafeSet mb p (Occupied col Disconnected) where
+		p = Position x y
 
 -- | @unsafeClear board positions@ takes a board and a collection of positions
 -- on the board which have recently changed, and modifies the board to take
