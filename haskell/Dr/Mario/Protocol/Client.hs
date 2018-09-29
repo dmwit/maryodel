@@ -3,7 +3,10 @@
 module Dr.Mario.Protocol.Client
 	( initializeConnection
 	, currentGameState
+	, queue
 	, control
+	, requestState
+	, debug
 	, GameState(..)
 	, GameDelta(..)
 	, PlayerState(..)
@@ -350,6 +353,37 @@ queue conn bps callback_ = do
 		_ -> do
 			atomically $ putTMVar (refGameState conn) igs
 			callback Discarded
+
+-- | Ask the server to send us the complete player state at a given future
+-- moment. The callback supplied will be called exactly once.
+requestState :: Connection -> R.StateRequestTime -> (Response (Map R.PlayerIdentifier PlayerState) -> IO a) -> IO ()
+requestState conn t callback_ = do
+	let callback = void . forkIO . void . callback_
+	igs <- atomically $ takeTMVar (refGameState conn)
+	case igs of
+		IInProgress cbControl cbQueue cbState stateIDs youMode frame players -> atomically $ do
+			let cbState' = M.insertWith (++) t [callback] cbState
+			writeTChan (chanToServer conn) (R.RequestState t)
+			putTMVar (refGameState conn)
+			         (IInProgress cbControl cbQueue cbState' stateIDs youMode frame players)
+		_ -> do
+			atomically $ putTMVar (refGameState conn) igs
+			callback Discarded
+
+-- | Send the server some debug information to display however it likes. You
+-- should keep the list under about a thousand elements to guarantee that it's
+-- all processed by the server.
+--
+-- Returns 'True' if we actually sent the data, or 'False' if debug messages
+-- are illegal in the current protocol state.
+debug :: Connection -> [(Position, Cell)] -> IO Bool
+debug conn info = do
+	igs <- atomically $ takeTMVar (refGameState conn)
+	atomically $ do
+		putTMVar (refGameState conn) igs
+		case igs of
+			IInProgress{} -> True <$ writeTChan (chanToServer conn) (R.Debug info)
+			_ -> return False
 
 -- | The protocol's @version_proposal@ and @version_selection@ states are not
 -- represented here; the connection initialization methods don't return until
