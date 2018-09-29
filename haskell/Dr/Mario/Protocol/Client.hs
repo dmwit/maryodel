@@ -7,12 +7,19 @@ module Dr.Mario.Protocol.Client
 	, control
 	, requestState
 	, debug
+	, Connection
 	, GameState(..)
 	, GameDelta(..)
 	, PlayerState(..)
 	, ModeState(..)
 	, Response(..)
+	-- * Convenient re-exports
+	, module Dr.Mario.Model
 	, R.StateRequestTime(..)
+	, R.ButtonPress(..)
+	, R.Button(..)
+	, R.ButtonAction(..)
+	, R.PlayerIdentifier, R.you
 	, Word32
 	) where
 
@@ -160,6 +167,7 @@ negotiateVersion dbg fromServer toServer = go False where
 		Just R.RequestVersion -> when success (atomically $ writeTChan toServer (R.Version R.protocolVersion)) >> return success
 		_ -> return False
 
+-- | Information needed to send messages to a server.
 data Connection = Connection
 	{ refGameState :: TMVar IGameState
 	, chanToServer :: TChan R.ClientMessage
@@ -389,10 +397,10 @@ debug conn info = do
 -- represented here; the connection initialization methods don't return until
 -- version negotiation is finished.
 data GameState
-	= Setup !(Map R.Identifier PlayerState)
+	= Setup !(Map R.PlayerIdentifier PlayerState)
 	-- ^ The protocol's @game_setup_zero@ and @game_setup@ states are collapsed
 	-- into 'Setup'. The 'Map' may have 'R.you' as a key.
-	| InProgress !Word32 !PlayerState !(Map R.Identifier PlayerState)
+	| InProgress !Word32 !PlayerState !(Map R.PlayerIdentifier PlayerState)
 	-- ^ The protocol's @cleanup@ and @control@ states are collapsed into
 	-- 'InProgress'. You can check the first 'PlayerState' to see whether the
 	-- official protocol state is @cleanup@ or @control@.
@@ -405,7 +413,7 @@ data GameState
 	deriving (Eq, Ord, Read, Show)
 
 data GameDelta
-	= GameStarted !PlayerState !(Map R.Identifier PlayerState)
+	= GameStarted !PlayerState !(Map R.PlayerIdentifier PlayerState)
 	| State !R.PlayerIdentifier !PlayerState
 	| Winner !R.PlayerIdentifier
 	| Loser !R.PlayerIdentifier
@@ -452,9 +460,9 @@ protocolStateFromModeState Control{} = ControlState
 --
 -- Extra fields come first.
 data IGameState
-	= ISetup !(Map R.Identifier IPlayerState)
-	| IInProgress !UnitCallbackMap !UnitCallbackMap !StateCallbackMap !(Set R.Identifier) (Maybe YouMode)
-	              !Word32 !(Map R.Identifier IPlayerState)
+	= ISetup !(Map R.PlayerIdentifier IPlayerState)
+	| IInProgress !UnitCallbackMap !UnitCallbackMap !StateCallbackMap !(Set R.PlayerIdentifier) (Maybe YouMode)
+	              !Word32 !(Map R.PlayerIdentifier IPlayerState)
 	-- ^ Extra fields:
 	--
 	-- * callbacks for @control@ messages
@@ -476,7 +484,7 @@ data Response a
 	deriving (Eq, Ord, Read, Show, Functor)
 
 type UnitCallbackMap = IdentifierMap (Response () -> IO ())
-type StateCallbackMap = Map R.StateRequestTime [Response (Map R.Identifier PlayerState) -> IO ()]
+type StateCallbackMap = Map R.StateRequestTime [Response (Map R.PlayerIdentifier PlayerState) -> IO ()]
 
 -- | A type for creating fresh 'R.Identifier's and associating them with
 -- values.
@@ -527,7 +535,7 @@ data IPlayerState = IPlayerState
 -- | Pick out 'R.you', unless it ain't there, in which case pick out something
 -- (anything, as long as it's a consistent choice), unless there's nothing
 -- there, in which case 'Nothing' is there.
-selectYou :: Map R.Identifier a -> Maybe ((R.Identifier, a), Map R.Identifier a)
+selectYou :: Map R.PlayerIdentifier a -> Maybe ((R.PlayerIdentifier, a), Map R.PlayerIdentifier a)
 selectYou m = case M.updateLookupWithKey def R.you m of
 	(Just v, m') -> Just ((R.you, v), m')
 	_ -> M.minViewWithKey m
