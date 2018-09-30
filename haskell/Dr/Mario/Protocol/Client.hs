@@ -462,9 +462,11 @@ launchFCEUX lfa = do
 	hPutStrLn fceuxIn (serverToClient (lfFIFOs lfa))
 	hPutStrLn fceuxIn (clientToServer (lfFIFOs lfa))
 	hClose fceuxIn
-	forkIO $ lfOutHandler lfa fceuxOut
-	forkIO $ lfErrHandler lfa fceuxErr
+	forkIO . ignoreEOF $ lfOutHandler lfa fceuxOut
+	forkIO . ignoreEOF $ lfErrHandler lfa fceuxErr
 	return fceuxPH
+	where
+	ignoreEOF act = catch act (\e -> if isEOFError e then return () else throwIO e)
 
 currentGameState :: Connection -> IO GameState
 currentGameState conn = atomically (readTMVar (refGameState conn)) >>= freezeGameState
