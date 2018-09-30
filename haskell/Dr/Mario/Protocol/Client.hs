@@ -569,11 +569,11 @@ data GameDelta
 	deriving (Eq, Ord, Read, Show)
 
 data PlayerState = PlayerState
-	{ dropRate :: !Word32
-	, pillLookahead :: !PillContent
+	{ dropRate :: !Word32 -- ^ How many frames can pass before a pill is forced to drop one row
+	, pillLookahead :: !PillContent -- ^ The next pill the player will get to control
 	, board :: !Board
 	, mode :: !ModeState
-	, dead :: !Bool
+	, dead :: !Bool -- ^ Has the player lost yet?
 	} deriving (Eq, Ord, Read, Show)
 
 data ModeState
