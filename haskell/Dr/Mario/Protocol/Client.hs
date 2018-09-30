@@ -36,6 +36,7 @@ module Dr.Mario.Protocol.Client
 	, R.ButtonAction(..)
 	, R.PlayerIdentifier, R.you
 	, Word32
+	, Default(..)
 	) where
 
 import Control.Concurrent
