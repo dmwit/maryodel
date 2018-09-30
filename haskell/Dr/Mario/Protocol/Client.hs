@@ -1,18 +1,33 @@
 {-# LANGUAGE DeriveFunctor #-}
 {-# LANGUAGE ViewPatterns #-}
+{-# LANGUAGE TypeFamilies #-}
 module Dr.Mario.Protocol.Client
-	( initializeConnection
+	( -- * High-level interface
+	  initializeConnection
 	, currentGameState
 	, queue
 	, control
 	, requestState
 	, debug
+	-- * Types
 	, Connection
 	, GameState(..)
 	, GameDelta(..)
 	, PlayerState(..)
 	, ModeState(..)
 	, Response(..)
+	-- * Low-level connection initialization
+	, FIFOs(..)
+	, CreateFIFOsArgs(..)
+	, createFIFOs
+	, OpenFIFOsArgs(..)
+	, openFIFOs
+	, LaunchFCEUXArgs(..)
+	, launchFCEUX
+	, ConnectToHandlesArgs(..)
+	, connectToHandles
+	, InitializeConnectionArgs(..)
+	, Diagnostic(..)
 	-- * Convenient re-exports
 	, module Dr.Mario.Model
 	, R.StateRequestTime(..)
@@ -29,6 +44,7 @@ import Control.Concurrent.STM.TChan
 import Control.Concurrent.STM.TMVar
 import Control.Exception
 import Control.Monad
+import Control.Monad.Trans.Maybe
 import Data.Attoparsec.ByteString (IResult(..))
 import Data.ByteString (ByteString)
 import Data.ByteString.Builder (hPutBuilder)
@@ -47,6 +63,7 @@ import System.FilePath
 import System.Posix.Files
 import System.Posix.Process
 import System.Posix.Signals
+import System.Posix.Types
 import System.IO
 import System.IO.Error
 import System.Process
@@ -157,9 +174,6 @@ readMsgs h dbg msgs = do
 
 	goBS bs = goResult bs (A.parse R.parse bs)
 
-stderrDiagnostics :: TChan Diagnostic -> IO ()
-stderrDiagnostics dbg = forever (atomically (readTChan dbg) >>= hPrint stderr)
-
 negotiateVersion :: TChan Diagnostic -> TChan (Maybe R.ServerMessage) -> TChan R.ClientMessage -> IO Bool
 negotiateVersion dbg fromServer toServer = go False where
 	go success = atomically (readTChan fromServer) >>= \msg -> case msg of
@@ -176,26 +190,45 @@ data Connection = Connection
 -- TODO: write some documentation about the two ways of writing a client (push
 -- v. pull)
 
--- | @initializeConnection rom server f@ initializes a connection with an
--- FCEUX-based server. The @rom@ gives the location of the Dr. Mario ROM, and
--- @server@ gives the location of the lua script implementing the server.
--- Blocks until version negotiation with the server is finished; throws
--- exceptions willy-nilly if everything isn't to its liking.
+data InitializeConnectionArgs a = InitializeConnectionArgs
+	{ icCreateFIFOs :: CreateFIFOsArgs
+	, icOpenFIFOs :: OpenFIFOsArgs ()
+	, icLaunch :: LaunchFCEUXArgs a ()
+	, icConnect :: ConnectToHandlesArgs ()
+	, icKillTimeout :: Int
+	-- ^ If version negotiation fails, we ask the server to shut itself down.
+	-- We give it this many microseconds after the request to comply, then the
+	-- request becomes more forceful. Defaults to 1s.
+	}
+
+-- See [NOTE: (), not Default]
+instance a ~ () => Default (InitializeConnectionArgs a) where
+	def = InitializeConnectionArgs
+		{ icCreateFIFOs = def
+		, icOpenFIFOs = def
+		, icLaunch = def
+		, icConnect = def
+		, icKillTimeout = 1000000
+		}
+
+-- | Initialize a connection with an FCEUX-based server. Blocks until version
+-- negotiation with the server is finished; throws exceptions willy-nilly if
+-- everything isn't to its liking.
 --
 -- If you find yourself trying to catch exceptions thrown by
 -- 'initializeConnection', let's you and me chat about making a type that
 -- embodies the different kinds of errors and making this return a suitable
 -- `Either`. Otherwise you're going to be really unhappy with the hacks you
 -- have to do.
---
--- @f@ will be invoked (in its own thread) whenever something especially
--- interesting happens.
-initializeConnection :: FilePath -> FilePath -> (GameDelta -> IO a) -> IO (Connection, ProcessHandle)
-initializeConnection rom server deltaCallback = do
-	fifos <- createFIFOs
-	ph <- launchFCEUX fifos rom server
-	handles <- openFIFOs fifos
-	mconn <- connectToHandles (serverToClient handles) (clientToServer handles) deltaCallback
+initializeConnection :: InitializeConnectionArgs FilePath -> IO (Connection, ProcessHandle)
+initializeConnection ica = do
+	fifos <- createFIFOs (icCreateFIFOs ica)
+	ph <- launchFCEUX (icLaunch ica) { lfFIFOs = fifos }
+	handles <- openFIFOs (icOpenFIFOs ica) { ofFIFOs = fifos }
+	mconn <- connectToHandles (icConnect ica)
+		{ cthServerToClient = serverToClient handles
+		, cthClientToServer = clientToServer handles
+		}
 	case mconn of
 		Just conn -> return (conn, ph)
 		Nothing -> do
@@ -203,48 +236,66 @@ initializeConnection rom server deltaCallback = do
 			for_ pids $ \pid -> do
 				signalProcess sigINT pid
 				-- give it a polite second to finish up...
-				code <- timeout 1000000 (waitForProcess ph)
+				code <- timeout (icKillTimeout ica) (waitForProcess ph)
 				when (isNothing code) $ do
 					-- ...then an impatient second...
 					signalProcess sigTERM pid
-					code <- timeout 1000000 (waitForProcess ph)
+					code <- timeout (icKillTimeout ica) (waitForProcess ph)
 					-- ...then be a bit less polite
 					when (isNothing code) (signalProcess sigKILL pid)
 			fail "Version negotiation went south. Perhaps a diplomatic dialog should be opened between server and client authors."
 
--- | @connectToHandles s2c c2s f@ initializes a connection with a server.
--- It will receive 'R.ServerMessage's on @s2c@, send 'R.ClientMessage's on
--- @c2s@, and print diagnostic information to 'stderr'. Blocks until version
--- negotiation with the server is finished; returns 'Nothing' if version
--- negotiation fails.
---
--- You should not do anything with the handles after calling
--- 'connectToHandles'. If version negotiation fails, they will be closed
--- for you.
---
--- @f@ will be invoked (in its own thread) whenever something especially
--- interesting happens.
-connectToHandles :: Handle -> Handle -> (GameDelta -> IO a) -> IO (Maybe Connection)
-connectToHandles hFromServer hToServer deltaCallback = do
+data ConnectToHandlesArgs a = ConnectToHandlesArgs
+	{ cthServerToClient :: a
+	-- ^ The handle to read server messages from. You should not do anything
+	-- with this handle after calling 'connectToHandles'. It will be closed for
+	-- you if version negotiation fails.
+	, cthClientToServer :: a
+	-- ^ The handle to write client messages to. You should not do anything
+	-- with this handle after calling 'connectToHandles'. It will be closed for
+	-- you if version negotiation fails.
+	, cthDeltaCallback :: GameDelta -> IO ()
+	-- ^ A callback that will be invoked whenever something especially
+	-- interesting happens. A thread is spawned for repeatedly invoking this
+	-- callback. Defaults to silently throwing away the delta.
+	, cthDiagnosticCallback :: Diagnostic -> IO ()
+	-- ^ A callback that will be invoked whenever something weird or
+	-- out-of-protocol happens. A thread is spawned for repeatedly invoking
+	-- this callback. Defaults to printing to @stderr@.
+	}
+
+-- See [NOTE: (), not Default]
+instance a ~ () => Default (ConnectToHandlesArgs a) where
+	def = ConnectToHandlesArgs
+		{ cthServerToClient = def
+		, cthClientToServer = def
+		, cthDeltaCallback = \_ -> return ()
+		, cthDiagnosticCallback = hPrint stderr
+		}
+
+-- | Initialize a connection with a server. Blocks until version negotiation
+-- with the server is finished; returns 'Nothing' if version negotiation fails.
+connectToHandles :: ConnectToHandlesArgs Handle -> IO (Maybe Connection)
+connectToHandles ctha = do
 	chanDbg <- newTChanIO
 	chanFromServer <- newTChanIO
 	chanToServer <- newTChanIO
-	threadToServer <- forkIO (writeMsgs hToServer chanDbg chanToServer)
-	threadFromServer <- forkIO (readMsgs hFromServer chanDbg chanFromServer)
-	threadDbg <- forkIO (stderrDiagnostics chanDbg)
+	threadToServer <- forkIO (writeMsgs (cthClientToServer ctha) chanDbg chanToServer)
+	threadFromServer <- forkIO (readMsgs (cthServerToClient ctha) chanDbg chanFromServer)
+	threadDbg <- forkIO . forever $ atomically (readTChan chanDbg) >>= cthDiagnosticCallback ctha
 	goodVersion <- negotiateVersion chanDbg chanFromServer chanToServer
 	if goodVersion
 	then do
-		refGameState <- newTMVarIO (ISetup def)
-		forkIO (handleMessages chanDbg refGameState chanFromServer deltaCallback)
+		refGameState <- newTMVarIO def
+		forkIO (handleMessages chanDbg refGameState chanFromServer (cthDeltaCallback ctha))
 		return (Just (Connection refGameState chanToServer))
 	else do
 		killThread threadToServer
 		killThread threadFromServer
 		-- threadDbg will get killed automatically once it's waiting on an
 		-- empty TChan, and we don't really want or need to kill it earlier
-		hClose hFromServer
-		hClose hToServer
+		hClose (cthServerToClient ctha)
+		hClose (cthClientToServer ctha)
 		return Nothing
 
 data FIFOs a = FIFOs
@@ -252,28 +303,49 @@ data FIFOs a = FIFOs
 	, serverToClient, clientToServer :: a
 	} deriving (Eq, Ord, Read, Show)
 
+data CreateFIFOsArgs = CreateFIFOsArgs
+	{ cfTmpDir :: Maybe FilePath
+	-- ^ For 'Nothing', we try the environment variables @XDG_RUNTIME_DIR@,
+	-- @TMPDIR@, @TMP@, @TEMP@ in that order, falling back to @/tmp@ if all of
+	-- them are unset.
+	, cfPerms :: FileMode
+	-- ^ Permissions to give the new pipes. Defaults to @0o600@ -- readable and
+	-- writable by the current user.
+	} deriving (Eq, Ord, Read, Show)
+
+instance Default CreateFIFOsArgs where
+	def = CreateFIFOsArgs
+		{ cfTmpDir = Nothing
+		, cfPerms = 0o600
+		}
+
 -- | Create some named pipes in a temporary directory suitable for use as
--- communication medium between server and client. It's polite to delete them
--- when you're done. Throws exceptions left and right if anything even slightly
--- unsavory happens.
-createFIFOs :: IO (FIFOs FilePath)
-createFIFOs = do
-	xdg <- lookupEnv "XDG_RUNTIME_DIR"
-	tmpdir <- lookupEnv "TMPDIR"
-	tmp <- lookupEnv "TMP"
-	temp <- lookupEnv "TEMP"
-	let tmpRoot = head . catMaybes $ [xdg, tmpdir, tmp, temp, Just "/tmp"]
+-- communication medium between server and client. It's polite to delete the
+-- pipes and the directory when you're done. Throws exceptions left and right
+-- if anything even slightly unsavory happens.
+createFIFOs :: CreateFIFOsArgs -> IO (FIFOs FilePath)
+createFIFOs cfa = do
+	-- This pattern is complete because of the final return in asum's argument.
+	Just tmpRoot <- runMaybeT . asum $
+		[ MaybeT . traverse return $ cfTmpDir cfa
+		, lookupEnvM "XDG_RUNTIME_DIR"
+		, lookupEnvM "TMPDIR"
+		, lookupEnvM "TMP"
+		, lookupEnvM "TEMP"
+		, return "/tmp"
+		]
 	dir <- createNewTemp tmpRoot 0
 	let s2c = dir </> "s2c"
 	    c2s = dir </> "c2s"
-	createNamedPipe s2c 0o600
-	createNamedPipe c2s 0o600
+	createNamedPipe s2c (cfPerms cfa)
+	createNamedPipe c2s (cfPerms cfa)
 	return FIFOs
 		{ tmpDir = dir
 		, serverToClient = s2c
 		, clientToServer = c2s
 		}
 	where
+	lookupEnvM = MaybeT . lookupEnv
 	createNewTemp root n = do
 		let dir = root </> "maryodel-" <> show n
 		(createDirectory dir >> return dir) `catch` \e ->
@@ -281,23 +353,69 @@ createFIFOs = do
 			then createNewTemp root (n+1)
 			else throwIO e
 
+data OpenFIFOsArgs a = OpenFIFOsArgs
+	{ ofFIFOs :: a
+	-- ^ Paths to the pipes to open (and the temporary directory we created to
+	-- contain them).
+	, ofRepeats :: Maybe Int
+	-- ^ How many times to try opening the client-to-server pipe (which doesn't
+	-- succeed until the server has opened its end). Use 'Nothing' to try
+	-- forever. Defaults to @Just 10@.
+	, ofTimeout :: Int
+	-- ^ How many microseconds to wait each time we try to open the
+	-- client-to-server pipe; default 0.1s.
+	} deriving (Eq, Ord, Read, Show)
+
+-- [NOTE: (), not Def]
+-- In several places, we write something like
+--
+--     instance a ~ () => Default (FArgs a)
+--
+-- and you might wonder why it isn't this instead:
+--
+--     instance Default a => Default (FArgs a)
+--
+-- These types are default arguments to a function written in the
+-- optional-named-argument style, so typical use will be something like this:
+--
+--     f def { fArg1 = foo, fArg5 = bar }
+--
+-- If we used `Default a => Default (FArgs a)`, then overwriting the fields
+-- with type `a` in this way would be very frustrating: the type of the
+-- original `def` would be ambiguous, able to choose among all `Default`
+-- instances, but in a way that doesn't matter (since those fields are
+-- completely ignored anyway).
+--
+-- Instead we use `a ~ () => Default (FArgs a)` to tell GHC exactly which
+-- choice of `a` to use, to remove that ambiguity. This reduces the types that
+-- `def` can inhabit, but mostly rules out types we probably don't plan to use
+-- anyway.
+
+-- See [NOTE: (), not Default]
+instance a ~ () => Default (OpenFIFOsArgs a) where
+	def = OpenFIFOsArgs
+		{ ofFIFOs = def
+		, ofRepeats = Just 10
+		, ofTimeout = 100000
+		}
+
 -- | Opening pipes is a bit finicky. When opening the writing end you gotta
 -- wait until there's somebody reading it. This opens both ends, giving the
 -- server a second to show up and throwing an exception if it doesn't.
 --
 -- Deletes all the 'FilePath's it's passed.
-openFIFOs :: FIFOs FilePath -> IO (FIFOs Handle)
-openFIFOs fifos = openBoth `finally` deleteAll where
+openFIFOs :: OpenFIFOsArgs (FIFOs FilePath) -> IO (FIFOs Handle)
+openFIFOs ofa = openBoth `finally` deleteAll where
 	openBoth = do
 		hs2c <- openFile (serverToClient fifos) ReadMode
-		hc2s <- openWriteEnd 10
+		hc2s <- openWriteEnd (ofRepeats ofa)
 		return fifos { serverToClient = hs2c, clientToServer = hc2s }
 
-	openWriteEnd 0 = fail $ "Couldn't open " <> clientToServer fifos <> " for writing. Perhaps the server isn't listening on that pipe?"
+	openWriteEnd (Just 0) = fail $ "Couldn't open " <> clientToServer fifos <> " for writing. Perhaps the server isn't listening on that pipe?"
 	openWriteEnd n = catch
 		(openFile (clientToServer fifos) WriteMode)
 		(\e -> if isDoesNotExistError e
-		       then threadDelay 100000 >> openWriteEnd (n-1)
+		       then threadDelay (ofTimeout ofa) >> openWriteEnd (subtract 1 <$> n)
 		       else throwIO e
 		)
 
@@ -306,21 +424,45 @@ openFIFOs fifos = openBoth `finally` deleteAll where
 		`finally` removeFile (clientToServer fifos)
 		`finally` removeDirectory (tmpDir fifos)
 
--- | @launchFCEUX fifos rom server@ attempts to launch a Dr. Mario server in
--- FCEUX. It will load Dr. Mario from the location given by @rom@ and the
--- server protocol implementation from the location given by @server@. It
--- informs the server about the two communication pipes in @fifos@ by passing
--- them to its stdin.
---
--- The server's stdout and stderr are silently ignored.
-launchFCEUX :: FIFOs FilePath -> FilePath -> FilePath -> IO ProcessHandle
-launchFCEUX fifos rom server = do
-	(fceuxIn, fceuxOut, fceuxErr, fceuxPH) <- runInteractiveProcess "fceux" ["--loadlua", server, rom] Nothing Nothing
-	hPutStrLn fceuxIn (serverToClient fifos)
-	hPutStrLn fceuxIn (clientToServer fifos)
+	fifos = ofFIFOs ofa
+
+data LaunchFCEUXArgs a b = LaunchFCEUXArgs
+	{ lfRom :: a
+	-- ^ The path to the Dr. Mario ROM
+	, lfServer :: a
+	-- ^ The path to the server protocol implementation lua script.
+	, lfFIFOs :: b
+	-- ^ The communication pipes, passed to the server on its @stdin@.
+	, lfOutHandler :: Handle -> IO ()
+	-- ^ What to do with FCEUX's @stdout@. The action will be run in its own
+	-- thread, and is responsible for emptying the handle frequently. Defaults
+	-- to silently throwing away everything.
+	, lfErrHandler :: Handle -> IO ()
+	-- ^ What to do with FCEUX's @stderr@. The action will be run in its own
+	-- thread, and is responsible for emptying the handle frequently. Defaults
+	-- to silently throwing away everything.
+	}
+
+-- See [NOTE: (), not Default]
+instance (a ~ (), b ~ ()) => Default (LaunchFCEUXArgs a b) where
+	def = LaunchFCEUXArgs
+		{ lfRom = def
+		, lfServer = def
+		, lfFIFOs = def
+		, lfOutHandler = forever . hGetLine
+		, lfErrHandler = forever . hGetLine
+		}
+
+-- | Attempt to launch a Dr. Mario server in FCEUX. It informs the server about
+-- the two communication pipes by passing them to its stdin.
+launchFCEUX :: LaunchFCEUXArgs FilePath (FIFOs FilePath) -> IO ProcessHandle
+launchFCEUX lfa = do
+	(fceuxIn, fceuxOut, fceuxErr, fceuxPH) <- runInteractiveProcess "fceux" ["--loadlua", lfServer lfa, lfRom lfa] Nothing Nothing
+	hPutStrLn fceuxIn (serverToClient (lfFIFOs lfa))
+	hPutStrLn fceuxIn (clientToServer (lfFIFOs lfa))
 	hClose fceuxIn
-	forkIO . forever $ hGetLine fceuxOut
-	forkIO . forever $ hGetLine fceuxErr
+	forkIO $ lfOutHandler lfa fceuxOut
+	forkIO $ lfErrHandler lfa fceuxErr
 	return fceuxPH
 
 currentGameState :: Connection -> IO GameState
@@ -473,6 +615,8 @@ data IGameState
 	--
 	-- Unlike 'InProgress', we store @you@ in the final field and select it out
 	-- when it's time to freeze.
+
+instance Default IGameState where def = ISetup def
 
 data YouMode = YouControl | YouCleanup deriving (Eq, Ord, Read, Show)
 
