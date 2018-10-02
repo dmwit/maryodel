@@ -26,6 +26,8 @@ module Dr.Mario.Protocol.Client
 	, launchFCEUX
 	, ConnectToHandlesArgs(..)
 	, connectToHandles
+	, KillServerArgs(..)
+	, killServer
 	, InitializeConnectionArgs(..)
 	, Diagnostic(..)
 	-- * Convenient re-exports
@@ -196,10 +198,7 @@ data InitializeConnectionArgs a = InitializeConnectionArgs
 	, icOpenFIFOs :: OpenFIFOsArgs ()
 	, icLaunch :: LaunchFCEUXArgs a ()
 	, icConnect :: ConnectToHandlesArgs ()
-	, icKillTimeout :: Int
-	-- ^ If version negotiation fails, we ask the server to shut itself down.
-	-- We give it this many microseconds after the request to comply, then the
-	-- request becomes more forceful. Defaults to 1s.
+	, icKill :: KillServerArgs () -- ^ Used only if version negotiation fails.
 	}
 
 -- See [NOTE: (), not Default]
@@ -209,7 +208,7 @@ instance a ~ () => Default (InitializeConnectionArgs a) where
 		, icOpenFIFOs = def
 		, icLaunch = def
 		, icConnect = def
-		, icKillTimeout = 1000000
+		, icKill = def
 		}
 
 -- | Initialize a connection with an FCEUX-based server. Blocks until version
@@ -233,18 +232,40 @@ initializeConnection ica = do
 	case mconn of
 		Just conn -> return (conn, ph)
 		Nothing -> do
-			pids <- getPid ph
-			for_ pids $ \pid -> do
-				signalProcess sigINT pid
-				-- give it a polite second to finish up...
-				code <- timeout (icKillTimeout ica) (waitForProcess ph)
-				when (isNothing code) $ do
-					-- ...then an impatient second...
-					signalProcess sigTERM pid
-					code <- timeout (icKillTimeout ica) (waitForProcess ph)
-					-- ...then be a bit less polite
-					when (isNothing code) (signalProcess sigKILL pid)
+			killServer (icKill ica) { ksHandle = ph }
 			fail "Version negotiation went south. Perhaps a diplomatic dialog should be opened between server and client authors."
+
+data KillServerArgs a = KillServerArgs
+	{ ksHandle :: a -- ^ The 'ProcessHandle' to kill.
+	, ksTimeout :: Int
+	-- ^ We request nicely at first, and give it this many microseconds to
+	-- comply, then the request becomes more forceful. Defaults to 1s.
+	} deriving (Eq, Ord, Read, Show)
+
+-- See [NOTE: (), not Default]
+instance a ~ () => Default (KillServerArgs a) where
+	def = KillServerArgs
+		{ ksHandle = def
+		, ksTimeout = def
+		}
+
+-- | Inform the server that now would be a good time to shut down, with slowly
+-- increasing insistence.
+killServer :: KillServerArgs ProcessHandle -> IO ()
+killServer ksa = do
+	pids <- getPid ph
+	for_ pids $ \pid -> do
+		signalProcess sigINT pid
+		-- give it a polite second to finish up...
+		code <- timeout (ksTimeout ksa) (waitForProcess ph)
+		when (isNothing code) $ do
+			-- ...then an impatient second...
+			signalProcess sigTERM pid
+			code <- timeout (ksTimeout ksa) (waitForProcess ph)
+			-- ...then be a bit less polite
+			when (isNothing code) (signalProcess sigKILL pid)
+	where
+	ph = ksHandle ksa
 
 data ConnectToHandlesArgs a = ConnectToHandlesArgs
 	{ cthServerToClient :: a
