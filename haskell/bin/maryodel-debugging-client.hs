@@ -17,7 +17,6 @@ import Graphics.Vty
 import Graphics.Vty.Attributes
 
 import Dr.Mario.Protocol.Client as Dr.M
-import Dr.Mario.Protocol.Raw (getIdentifier)
 
 main :: IO ()
 main = do

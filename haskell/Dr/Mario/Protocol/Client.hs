@@ -36,7 +36,7 @@ module Dr.Mario.Protocol.Client
 	, R.ButtonPress(..)
 	, R.Button(..)
 	, R.ButtonAction(..)
-	, R.PlayerIdentifier, R.you
+	, R.PlayerIdentifier, R.you, R.playerIdentifier, R.getIdentifier
 	, Word32
 	, Default(..)
 	) where
