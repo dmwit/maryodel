@@ -16,7 +16,7 @@ import Brick.Widgets.Core
 import Graphics.Vty
 import Graphics.Vty.Attributes
 
-import Dr.Mario.Protocol.Client as DrM
+import Dr.Mario.Protocol.Client as Dr.M
 import Dr.Mario.Protocol.Raw (getIdentifier)
 
 main :: IO ()
@@ -107,17 +107,17 @@ renderPlayerState n s = vBox . map hCenter $
 
 bottomLeftCell, otherCell :: PillContent -> Cell
 bottomLeftCell pc = Occupied (bottomLeftColor pc) $ case orientation pc of
-	DrM.Horizontal -> West
-	DrM.Vertical   -> South
+	Dr.M.Horizontal -> West
+	Dr.M.Vertical   -> South
 
 otherCell pc = Occupied (otherColor pc) $ case orientation pc of
-	DrM.Horizontal -> East
-	DrM.Vertical   -> North
+	Dr.M.Horizontal -> East
+	Dr.M.Vertical   -> North
 
 renderPillContent :: PillContent -> Widget n
 renderPillContent pc = case orientation pc of
-	DrM.Horizontal -> renderCell (bottomLeftCell pc) <+> renderCell (     otherCell pc)
-	DrM.Vertical   -> renderCell (     otherCell pc) <=> renderCell (bottomLeftCell pc)
+	Dr.M.Horizontal -> renderCell (bottomLeftCell pc) <+> renderCell (     otherCell pc)
+	Dr.M.Vertical   -> renderCell (     otherCell pc) <=> renderCell (bottomLeftCell pc)
 
 renderBoard :: Board -> ModeState -> Widget n
 renderBoard b m = border . vBox $
@@ -183,7 +183,7 @@ badAttr, goodAttr :: AttrName
 badAttr  = fromString "bad"
 goodAttr = fromString "good"
 
-colorAttr :: DrM.Color -> AttrName
+colorAttr :: Dr.M.Color -> AttrName
 colorAttr = fromString . show
 
 data ProgramState = ProgramState
