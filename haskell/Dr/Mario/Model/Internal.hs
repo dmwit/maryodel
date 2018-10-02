@@ -21,6 +21,8 @@ import qualified Data.Vector.Primitive.Mutable    as DVPM
 import qualified Data.Vector.Unboxed              as U
 
 data Color = Red | Yellow | Blue deriving (Bounded, Enum, Eq, Ord, Read, Show)
+-- | A horizontal pill has a 'West' shape to the left of an 'East' shape, and a
+-- vertical pill has a 'North' shape above a 'South' shape.
 data Shape = Virus | Disconnected | North | South | East | West deriving (Bounded, Enum, Eq, Ord, Read, Show)
 data Cell = Empty | Occupied !Color !Shape deriving (Eq, Ord, Read, Show)
 
