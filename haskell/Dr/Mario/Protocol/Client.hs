@@ -578,6 +578,8 @@ data GameState
 	-- 3. Opponents' state (if any); will not have 'R.you' as a key
 	deriving (Eq, Ord, Read, Show)
 
+instance Default GameState where def = Setup def
+
 data GameDelta
 	= GameStarted !PlayerState !(Map R.PlayerIdentifier PlayerState)
 	| State !R.PlayerIdentifier !PlayerState
