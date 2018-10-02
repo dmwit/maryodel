@@ -18,8 +18,13 @@ library
                        Dr.Mario.Protocol.Client,
                        Dr.Mario.Protocol.Raw
   other-extensions:    BinaryLiterals,
+                       DeriveFunctor,
+                       FlexibleInstances,
                        TypeFamilies,
-                       MultiParamTypeClasses
+                       MultiParamTypeClasses,
+                       ScopedTypeVariables,
+                       TypeFamilies,
+                       ViewPatterns
   build-depends:       ansi-terminal >=0.7 && <0.8,
                        attoparsec >=0.13 && <0.14,
                        base >=4.10 && <4.12,
