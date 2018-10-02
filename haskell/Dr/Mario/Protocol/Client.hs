@@ -924,7 +924,8 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 			}
 
 	enterControlMode lookahead ips = ips
-		{ iMode = Control (frame + iDropRate ips) (Pill lookahead Position { x = 3, y = 15 })
+		{ iMode = Control (frame + iDropRate ips) (Pill (iPillLookahead ips) Position { x = 3, y = 15 })
+		, iPillLookahead = lookahead
 		}
 
 	protocolState = case selectYou players of
