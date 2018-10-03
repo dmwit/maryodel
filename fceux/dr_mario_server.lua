@@ -176,8 +176,14 @@ end
 
 local Player = {}
 
+local Player_methods = {}
+local Player_mt = {
+	__name = "Player";
+	__index = Player_methods;
+}
+
 function Player.new(addrs, id)
-	local self =
+	local self = setmetatable(
 		{ addrs = addrs, id = id
 		, mode = PLAYER_MODE.virus_placement
 		, coarse = memory.readbyte(addrs.coarse_speed)
@@ -191,15 +197,7 @@ function Player.new(addrs, id)
 		, old_y = -1
 		, seen_nonzero_drop = false
 		, seen_small_virus_count = false
-		, update = Player.update
-		, send_state = Player.send_state
-		, send_pill = Player.send_pill
-		, lookahead = Player.lookahead
-		, lookcurrent = Player.lookcurrent
-		, create_garbage_callback = Player.create_garbage_callback
-		, create_winner_callback = Player.create_winner_callback
-		, create_loser_callback = Player.create_loser_callback
-		}
+		}, Player_mt)
 	-- TODO: unregister these at an appropriate time
 	memory.registerwrite(addrs.board, 2*BOARD_WIDTH, self:create_garbage_callback())
 	memory.registerwrite(addrs.virus_count, 1, self:create_winner_callback())
@@ -207,7 +205,7 @@ function Player.new(addrs, id)
 	return self
 end
 
-function Player.update(self)
+function Player_methods:update()
 	local sequence = memory.readbyte(self.addrs.pill_sequence_counter)
 	local drop = memory.readbyte(self.addrs.pill_drop_counter)
 	local fine = memory.readbyte(self.addrs.fine_speed)
@@ -296,7 +294,7 @@ end
 -- want to be as sure as possible that we're sending it the current state of
 -- the world and not what the potentially buggy server implementation thinks
 -- the state of the world is.
-function Player.send_state(self)
+function Player_methods:send_state()
 	if not playing then return end
 	local fine   = memory.readbyte(self.addrs.fine_speed)
 	local coarse = memory.readbyte(self.addrs.coarse_speed)
@@ -315,14 +313,14 @@ function Player.send_state(self)
 	end
 end
 
-function Player.lookahead(self)
+function Player_methods:lookahead()
 	local ix = (memory.readbyte(self.addrs.pill_sequence_counter)-1) % 128
 	return PILL_LOOKAHEAD[memory.readbyte(ADDR.pill_sequence+ix)]
 end
 
 -- doesn't make any promises to return something sensible when the given player
 -- is not in control mode
-function Player.lookcurrent(self)
+function Player_methods:lookcurrent()
 	local orientation = memory.readbyte(self.addrs.pill_orientation)
 	local colors = memory.readbyterange(self.addrs.pill_colors, 2)
 	local color1 = CELL_BOTTOM_NIBBLE_MAP[colors:byte(1)]
@@ -338,7 +336,7 @@ function Player.lookcurrent(self)
 	return string.char(CELL_BASE_OFFSET + shape1 + color1, CELL_BASE_OFFSET + shape2 + color2)
 end
 
-function Player.send_pill(self, x, y, pill)
+function Player_methods:send_pill(x, y, pill)
 	o(table.concat({'pill', self.id, x, y, pill}, ' '))
 	self.old_x = x
 	self.old_y = y
@@ -364,7 +362,7 @@ end
 -- TODO: Double-check that this heuristic works correctly when placing a
 -- vertical pill in the top row (hence disconnecting and discarding the
 -- off-the-screen half of the pill).
-function Player.create_garbage_callback(self)
+function Player_methods:create_garbage_callback()
 	return function(addr, size)
 		if size ~= 1 then
 			print('WARNING: Saw unexpected write size of ' .. size .. ' for address ' .. addr)
@@ -383,7 +381,7 @@ function Player.create_garbage_callback(self)
 	end
 end
 
-function Player.create_winner_callback(self)
+function Player_methods:create_winner_callback()
 	return function(addr, size)
 		if memory.readbyte(addr) == 0 and self.mode == PLAYER_MODE.cleanup and playing then
 			o('winner ' .. self.id)
@@ -397,7 +395,7 @@ end
 -- 3,15 before cleanup is finished, so this will frequently incorrectly declare
 -- a loser: whenever 3,15 or 4,15 are occupied at pill lock time but a match
 -- causes them to be emptied.
-function Player.create_loser_callback(self)
+function Player_methods:create_loser_callback()
 	return function(addr, size)
 		if self.mode == PLAYER_MODE.cleanup and playing and
 		   memory.readbyterange(self.addrs.board + 3, 2) ~= CELL_TWO_EMPTIES then
