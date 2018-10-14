@@ -12,7 +12,7 @@ import System.IO.Error
 import qualified Data.ByteString.Char8 as BS
 import qualified Data.ByteString.Lazy.Char8 as LBS
 
-knownVersions = BS.pack <$> ["0", "0-statefix"]
+knownVersions = BS.pack <$> ["0", "0-statefix", "1"]
 
 guessPipes = do
 	fps <- listDirectory "/tmp"
@@ -72,5 +72,5 @@ main = do
 	hSetBuffering stdout NoBuffering
 	hSetBuffering hc2s   NoBuffering
 	setVersion hs2c hc2s
-	forkIO (LBS.hGetContents hs2c >>= LBS.putStr)
+	forkIO (forever (BS.hGetLine hs2c >>= BS.putStrLn))
 	LBS.getContents >>= LBS.hPutStr hc2s
