@@ -185,6 +185,7 @@ function Player.new(addrs, id)
 		, garbage_valid = true
 		, old_sequence = memory.readbyte(addrs.pill_sequence_counter)
 		, old_drop = memory.readbyte(addrs.pill_drop_counter)
+		, old_old_drop = memory.readbyte(addrs.pill_drop_counter) + 1 -- anything inequal to old_drop is fine
 		, old_fine = memory.readbyte(addrs.fine_speed)
 		, old_pill = ''
 		, old_x = -1
@@ -224,7 +225,33 @@ function Player.update(self)
 		end
 	elseif self.mode == PLAYER_MODE.control then
 		self.seen_nonzero_drop = self.seen_nonzero_drop or (drop ~= 0)
-		if self.seen_nonzero_drop and self.old_drop == drop then
+
+		-- Yuck. Okay, this deserves some explanation.
+		--
+		-- When a pill locks (and cleanup mode begins), its drop counter isn't
+		-- changed until control mode begins again. And under normal
+		-- circumstances, the drop counter changes every frame, either by
+		-- decrementing by one or being reset to its max if it's already zero.
+		-- So the plan for detecting when cleanup mode begins is to watch for
+		-- the drop counter to stay the same for two frames in a row.
+		--
+		-- Except there's one wrinkle, which is that the way pressing the down
+		-- arrow appears to work is that it sets the drop counter to 0. This
+		-- means you can see the drop counter be 0 two frames in a row if the
+		-- counter naturally drops to 0 by the decrement-every-frame mechanic,
+		-- gets reset to max briefly on the next frame, then the down-arrow
+		-- handling gets invoked and resets it to 0 again. So the new plan is
+		-- to watch for *three* frames in a row of unchanged drop counter.
+		--
+		-- And now you ask: can't we see three frames in a row of 0s if the
+		-- down-arrow handler gets invoked two frames in a row after a natural
+		-- auto-decrement-to-zero? Nope: the game only appears to check for
+		-- down arrows every other frame. Yeesh.
+		--
+		-- Oh yeah, and the seen_nonzero_drop stuff is a workaround for the
+		-- fact that we actually transition to control mode a little bit too
+		-- early.
+		if self.seen_nonzero_drop and self.old_old_drop == self.old_drop and self.old_drop == drop then
 			self.mode = PLAYER_MODE.cleanup
 			if playing then
 				o('mode ' .. self.id .. ' cleanup')
@@ -264,6 +291,7 @@ function Player.update(self)
 	self.garbage = {}
 	self.garbage_valid = true
 	self.old_sequence = sequence
+	self.old_old_drop = self.old_drop
 	self.old_drop = drop
 	self.old_fine = fine
 end
