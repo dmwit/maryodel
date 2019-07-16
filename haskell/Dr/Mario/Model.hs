@@ -449,7 +449,9 @@ unsafeClear mb ps = do
 	disconnect Empty = error "The impossible happened: a pill was connected to an empty space."
 
 	clearSingleMatch p = do
-		[l,r,u,d] <- mapM (mrunLength mb p) [left, right, up, down]
+		-- the ~ avoids an annoying MonadFail constraint, and should be safe in
+		-- this case
+		~[l,r,u,d] <- mapM (mrunLength mb p) [left, right, up, down]
 		let clears = [p { x = x p + dx } | l+r+1 >= 4, dx <- [-l .. r]]
 		          ++ [p { y = y p + dy } | u+d+1 >= 4, dy <- [-d .. u]]
 		(disconnects_, drops_) <- unzip <$> mapM clearSingleCell clears
