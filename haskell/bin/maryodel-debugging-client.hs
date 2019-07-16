@@ -35,6 +35,29 @@ main = do
 	s <- customMain (mkVty def) (Just eventChan) (app conn ph) def { gameState = gs }
 	unless (serverHasQuit s) (killServer def { ksHandle = ph })
 
+-- known bugs:
+-- 1. Pills sometimes lock early. Triggering condition seems to be hitting the
+--    "down" key near the "forced drop" frame. A reliable trigger is:
+--
+--    a. Wait for the "next forced drop" frame number to be odd (and the pill
+--       to be in the second or later row, see (2) below).
+--    b. Wait for the "current frame" to be one less than the next forced drop frame.
+--    c. Press the down arrow for one frame.
+--
+--    (fixed in f7c50e6)
+--
+--    I think I've also observed this sequence:
+--    a. I press (sideways) arrow key.
+--    b. Server reports pill has moved.
+--    c. Pill has actually locked before the movement, so the move never
+--       actually happened on the emulator side.
+--    d. Server and client are now out of synch.
+--    See https://youtu.be/eITPoTcFAJE?t=40s for this in action.
+--
+-- 2. "Next forced drop" is not correct when the pill is in the top row.
+--    (Perhaps the server is reporting that you enter control mode one frame
+--    too early.)
+
 app :: Connection -> ProcessHandle -> App ProgramState (Either Diagnostic GameDelta) ()
 app conn ph = App
 	{ appDraw = pure . joinBorders . renderProgramState
