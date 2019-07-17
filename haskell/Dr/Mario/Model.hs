@@ -12,20 +12,20 @@ module Dr.Mario.Model
 	, emptyBoard
 	, width, height
 	, get, getColor, unsafeGet
-	, move, rotate, place, garbage
+	, move, rotate, place, garbage, clear
 	, pp
 	, MBoard, IOBoard
 	, thaw, mfreeze, munsafeFreeze
 	, memptyBoard
 	, mwidth, mheight
-	, minfect, mplace, mgarbage
+	, minfect, mplace, mgarbage, mclear
 	) where
 
 import Control.Applicative
 import Control.Monad
 import Control.Monad.Primitive
 import Control.Monad.ST
-import Data.Foldable (toList)
+import Data.Foldable (toList, for_)
 import Data.Map (Map)
 import Data.Set (Set)
 import Data.Word
@@ -260,6 +260,14 @@ garbage board pieces = do
 		munsafeGarbage mb pieces
 		munsafeFreeze mb
 
+-- | Set the given positions to 'Empty', then apply gravity and clear
+-- four-in-a-rows.
+clear :: Foldable f => Board -> f Position -> Board
+clear board ps = runST $ do
+	mb <- thaw board
+	mclear mb ps
+	munsafeFreeze mb
+
 data MBoard s = MBoard
 	{ mwidth, mheight :: !Int
 	, mcells :: !(MV.MVector s Cell)
@@ -425,6 +433,18 @@ munsafeGarbage mb pieces = do
 	y = mheight mb - 1
 	go x col = p <$ munsafeSet mb p (Occupied col Disconnected) where
 		p = Position x y
+
+-- | Set the given positions to 'Empty', then apply gravity and clear
+-- four-in-a-rows.
+mclear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m ()
+mclear mb ps = do
+	for_ ps $ \p -> mset mb p Empty
+	unsafeDropAndClear mb
+		[ p { y = y' }
+		| p <- toList ps
+		, let y' = y p + 1
+		, x p >= 0 && x p < mwidth mb && y p >= 0 && y' < mheight mb
+		]
 
 -- | @unsafeClear board positions@ takes a board and a collection of positions
 -- on the board which have recently changed, and modifies the board to take
