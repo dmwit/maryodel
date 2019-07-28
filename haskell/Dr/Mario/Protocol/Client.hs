@@ -490,7 +490,11 @@ launchFCEUX lfa = do
 	ignoreEOF act = catch act (\e -> if isEOFError e then return () else throwIO e)
 
 currentGameState :: Connection -> IO GameState
-currentGameState conn = atomically (readTMVar (refGameState conn)) >>= freezeGameState
+currentGameState conn = do
+	igs <- atomically (takeTMVar (refGameState conn))
+	gs <- freezeGameState igs
+	atomically (putTMVar (refGameState conn) igs)
+	return gs
 
 -- | Start pressing buttons on a given frame number (and discard any previously
 -- scheduled button presses on or after that frame). The callback supplied will
