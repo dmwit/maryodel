@@ -247,7 +247,7 @@ ppChar :: Printer Char
 ppChar = liftPP . B.word8 . toEnum . fromEnum
 
 ppLiteral :: Printer String
-ppLiteral = foldMap ppChar
+ppLiteral s = ([], foldMap (B.word8 . toEnum . fromEnum) s)
 
 class Protocol a where
 	parseT :: Parser a
