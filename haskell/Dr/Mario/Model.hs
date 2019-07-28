@@ -13,22 +13,29 @@ module Dr.Mario.Model
 	, width, height
 	, get, getColor, unsafeGet
 	, move, rotate, place, garbage, clear
+	, randomBoard, unsafeRandomViruses
+	, advanceRNG, decodeColor, decodePosition
 	, pp
 	, MBoard, IOBoard
 	, thaw, mfreeze, munsafeFreeze
 	, memptyBoard
 	, mwidth, mheight
 	, minfect, mplace, mgarbage, mclear
+	, mrandomBoard, munsafeRandomViruses
+	, mnewRNG, mrandomColor, mrandomPosition
 	) where
 
 import Control.Applicative
 import Control.Monad
 import Control.Monad.Primitive
 import Control.Monad.ST
+import Data.Bits hiding (rotate)
 import Data.Foldable (toList, for_)
 import Data.Map (Map)
+import Data.Primitive.MutVar
 import Data.Set (Set)
 import Data.Word
+import qualified Data.List                   as L
 import qualified Data.Map.Strict             as M
 import qualified Data.Set                    as S
 import qualified Data.Vector                 as V
@@ -582,3 +589,163 @@ unsafeClearAndDrop :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Pos
 unsafeClearAndDrop mb ps
 	| null ps = return ()
 	| otherwise = unsafeClear mb ps >>= unsafeDropAndClear mb
+
+-- | An implementation of the random number generator. Given a current RNG
+-- state, produces the next one.
+advanceRNG :: Word16 -> Word16
+advanceRNG seed = seed `shiftR` 1 .|. if testBit seed 1 == testBit seed 9 then 0 else bit 15
+
+-- | Choose a color from an RNG state in the same (biased) way that Dr. Mario does.
+decodeColor :: Word16 -> Color
+-- TODO: unpack this vector, maybe
+decodeColor = \seed -> colorTable V.! fromIntegral (seed .&. 0xf) where
+	colorTable = V.fromListN 16 [Yellow,Red,Blue,Blue,Red,Yellow,Yellow,Red,Blue,Blue,Red,Yellow,Yellow,Red,Blue,Red]
+
+-- | Choose a position from an RNG state in the same way that Dr. Mario does
+-- (hence specifically for boards of width 8 and height 16).
+decodePosition :: Word16 -> Position
+decodePosition seed = Position
+	{ x = fromIntegral (seed .&. 0x0007)
+	, y = fromIntegral ((seed .&. 0x0f00) `shiftR` 8)
+	}
+
+-- | A call to @unsafeRandomViruses w h n mpos mcol@ will generate a random
+-- board of width @w@, height @h@, and with @n@ viruses, using the same
+-- virus-placement logic that Dr. Mario uses, but with your custom logic for
+-- choosing a position (@mpos@) and color (@mcol@). See 'mnewRNG',
+-- 'mrandomColor', and 'mrandomPosition' if you would like to use the same
+-- logic as Dr. Mario itself for picking positions and colors.
+--
+-- It is unsafe because it may loop forever if @n@ is big enough that it gets
+-- stuck trying to find a suitable virus location.
+unsafeRandomViruses :: PrimMonad m => Int -> Int -> Int -> m Position -> m Color -> m Board
+unsafeRandomViruses w h n mpos mcol = do
+	mb <- memptyBoard w h
+	munsafeRandomViruses mb n mpos mcol
+	munsafeFreeze mb
+
+-- | @randomBoard seed level@ generates a random starting board in exactly the
+-- same way that Dr. Mario would, starting from RNG state given by @seed@, and
+-- for virus level @level@ (usually in the range 0-24).
+randomBoard :: Word16 -> Int -> Board
+randomBoard seed level = runST (mrandomBoard seed level >>= munsafeFreeze)
+
+-- | Given a seed, produce an action which you can call repeatedly to get the
+-- random sequence that the NES Dr. Mario's random number generator would
+-- produce. The seed is not produced as the first result (unless the seed is
+-- 0).
+mnewRNG :: PrimMonad m => Word16 -> m (m Word16)
+mnewRNG seed = do
+	ref <- newMutVar seed
+	return $ do
+		-- Could modifyMutVar >> readMutVar, but that's one more dereference
+		-- than this. I wish modifyMutVar would just return the new result...
+		seed' <- advanceRNG <$> readMutVar ref
+		writeMutVar ref seed'
+		return seed'
+
+-- | Turn a random number generator action into an action that produces a
+-- random color in the same (biased) way that Dr. Mario does.
+mrandomColor :: Functor m => m Word16 -> m Color
+mrandomColor = fmap decodeColor
+
+-- | Turn a random number generator action into an action that produces a
+-- random position at a given maximum height in the same way that Dr. Mario
+-- does (i.e. using rejection sampling).
+mrandomPosition :: Monad m => Int -> m Word16 -> m Position
+mrandomPosition height mrng = go where
+	go = do
+		pos <- decodePosition <$> mrng
+		if y pos > height then go else return pos
+
+-- TODO: Some ideas for performance improvements:
+-- 1. Keep a data structure that maps positions to virus colors that can go
+--    there.
+-- 2. Keep a data structure that, for each position, remembers what position we
+--    ended up skipping to last time we tried to place a virus there.
+
+-- | Given a virus position and color, use the same routine Dr. Mario does to
+-- try to place a virus of a similar color near that position. Reports whether
+-- it succeeded or gave up.
+mtryPlaceVirus :: PrimMonad m => MBoard (PrimState m) -> Position -> Color -> m Bool
+mtryPlaceVirus mb pos_ c_ = go (clipPosition pos_) where
+	w = mwidth  mb
+	h = mheight mb
+
+	clipPosition pos = Position
+		{ x = max 0 . min (w-1) $ x pos
+		, y = max 0 . min (h-1) $ y pos
+		}
+
+	virusColors mcells = [color | Just (Occupied color Virus) <- mcells]
+	neighborColors pos = do
+		here <- munsafeGet mb pos
+		case here of
+			Empty -> virusColors <$> traverse (mget mb)
+				[ pos { x = x pos - 2 }
+				, pos { x = x pos + 2 }
+				, pos { y = y pos - 2 }
+				, pos { y = y pos + 2 }
+				]
+			_ -> return [Red,Yellow,Blue]
+
+	colorsToTry = take 3 . dropWhile (c_/=) $ cycle [Blue,Red,Yellow]
+
+	advancePosition pos
+		| x' >= w = Position { y = y pos - 1, x = 0 }
+		| otherwise = pos { x = x' }
+		where x' = x pos + 1
+
+	go pos
+		| y pos < 0 = return False
+		| otherwise = do
+			invalidColors <- neighborColors pos
+			case colorsToTry L.\\ invalidColors of
+				[] -> go (advancePosition pos)
+				c:_ -> True <$ minfect mb pos c
+
+-- | Place a single virus using the same logic that Dr. Mario uses. This is
+-- unsafe because it may loop forever if no suitable location can be found.
+munsafeRandomVirus :: PrimMonad m => MBoard (PrimState m) -> m Position -> m Color -> m ()
+munsafeRandomVirus mb mpos mc = go where
+	go = do
+		pos <- mpos
+		c <- mc
+		success <- mtryPlaceVirus mb pos c
+		unless success go
+
+-- | Populate a board with viruses using the same logic that Dr. Mario uses.
+-- This is unsafe because it may loop forever if it can't find enough suitable
+-- virus locations. The 'Int' argument is how many viruses to place.
+munsafeRandomViruses ::
+	PrimMonad m =>
+	MBoard (PrimState m) ->
+	Int ->
+	m Position ->
+	m Color ->
+	m ()
+munsafeRandomViruses mb virusCount mpos mc
+	= for_ colorGenerators (munsafeRandomVirus mb mpos)
+	where
+	-- Technically, this should start a different place in the list depending
+	-- on virusCount .&. 3. But the original game always chooses a virus count
+	-- that is a multiple of 4, so that behavior can never be observed;
+	-- therefore we simplify.
+	colorGenerators = take virusCount
+		$ cycle [return Yellow, mc, return Blue, return Red]
+
+-- mrandomBoard is not unsafe, because I have exhaustively tested that for each
+-- seed, we successfully generate a board without looping for levels 14, 16,
+-- 18, and 20 (the maximum virus counts for each possible maximum height).
+
+-- | Given a seed and a virus level (usually in the range 0-24), generate a
+-- random board of the standard size in the same way Dr. Mario does.
+mrandomBoard :: PrimMonad m => Word16 -> Int -> m (MBoard (PrimState m))
+mrandomBoard seed level = do
+	mb <- memptyBoard 8 16
+	mrng <- mnewRNG seed
+	munsafeRandomViruses mb virusCount (mrandomPosition height mrng) (mrandomColor mrng)
+	return mb
+	where
+	height     = max 9 . min 12 $ (level+5) `shiftR` 1
+	virusCount = max 4 . min 84 $ (level+1) `shiftL` 2
