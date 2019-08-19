@@ -31,6 +31,7 @@ import Control.Monad.Primitive
 import Control.Monad.ST
 import Data.Bits hiding (rotate)
 import Data.Foldable (toList, for_)
+import Data.Hashable (Hashable, hashWithSalt, hashUsing)
 import Data.Map (Map)
 import Data.Primitive.MutVar
 import Data.Set (Set)
@@ -66,6 +67,24 @@ data Pill = Pill
 	{ content :: !PillContent
 	, bottomLeftPosition :: !Position
 	} deriving (Eq, Ord, Read, Show)
+
+instance Hashable Orientation where hashWithSalt = hashUsing fromEnum
+
+instance Hashable Position where
+	hashWithSalt s pos = s
+		`hashWithSalt` x pos
+		`hashWithSalt` y pos
+
+instance Hashable PillContent where
+	hashWithSalt s pc = s
+		`hashWithSalt` orientation pc
+		`hashWithSalt` bottomLeftColor pc
+		`hashWithSalt` otherColor pc
+
+instance Hashable Pill where
+	hashWithSalt s pill = s
+		`hashWithSalt` content pill
+		`hashWithSalt` bottomLeftPosition pill
 
 otherPosition :: Pill -> Position
 otherPosition pill = unsafeMove dir pos where

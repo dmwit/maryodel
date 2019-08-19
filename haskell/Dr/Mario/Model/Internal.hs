@@ -12,6 +12,7 @@ module Dr.Mario.Model.Internal
 
 import Data.Bits
 import Data.Default
+import Data.Hashable (Hashable, hashWithSalt, hashUsing)
 import Data.Primitive.ByteArray (setByteArray)
 import Data.Word
 import qualified Data.Vector                      as V
@@ -25,6 +26,8 @@ data Color = Red | Yellow | Blue deriving (Bounded, Enum, Eq, Ord, Read, Show)
 -- vertical pill has a 'North' shape above a 'South' shape.
 data Shape = Virus | Disconnected | North | South | East | West deriving (Bounded, Enum, Eq, Ord, Read, Show)
 data Cell = Empty | Occupied !Color !Shape deriving (Eq, Ord, Read, Show)
+
+instance Hashable Color where hashWithSalt = hashUsing fromEnum
 
 {-# INLINE decodeCell #-}
 decodeCell :: Word8 -> Cell
