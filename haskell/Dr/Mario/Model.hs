@@ -12,7 +12,7 @@ module Dr.Mario.Model
 	, emptyBoard
 	, width, height
 	, get, getColor, unsafeGet
-	, move, rotate, place, garbage, clear
+	, move, rotate, rotateContent, place, garbage, clear
 	, randomBoard, unsafeRandomViruses
 	, advanceRNG, decodeColor, decodePosition
 	, pp
