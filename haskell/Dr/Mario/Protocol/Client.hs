@@ -854,14 +854,14 @@ handleMessage igs@(IInProgress cbControl cbQueue cbState stateIDs youMode frame 
 	R.ModeCleanup player -> case M.lookup player players of
 		Just ips -> case iMode ips of
 			Control _ pill -> do
-				success <- mplace (iBoard ips) pill
-				when success . atomically $ writeTVar (iCachedBoard ips) Nothing
+				virusCount <- mplace (iBoard ips) pill
+				for_ virusCount $ \_ -> atomically $ writeTVar (iCachedBoard ips) Nothing
 				let players' = M.insert player ips { iMode = Cleanup } players
 				    youMode' = if player == R.you then Just YouCleanup else youMode
 				igs' <- if player == R.you
 					then handleStateCallbacks (IInProgress cbControl cbQueue cbState stateIDs (Just YouCleanup) frame players')
 					else return (IInProgress cbControl cbQueue cbState stateIDs youMode frame players')
-				return ( [IllegalPill player pill | not success]
+				return ( [IllegalPill player pill | isNothing virusCount]
 				       , Just (ModeCleanup player)
 				       , igs'
 				       )

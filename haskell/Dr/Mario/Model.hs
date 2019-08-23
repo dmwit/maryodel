@@ -15,11 +15,13 @@ module Dr.Mario.Model
 	, move, rotate, rotateContent, place, garbage, clear
 	, randomBoard, unsafeRandomViruses
 	, advanceRNG, decodeColor, decodePosition
+	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill
 	, pp
 	, MBoard, IOBoard
 	, thaw, mfreeze, munsafeFreeze
 	, memptyBoard
 	, mwidth, mheight
+	, mget, munsafeGet
 	, minfect, mplace, mgarbage, mclear
 	, mrandomBoard, munsafeRandomViruses
 	, mnewRNG, mrandomColor, mrandomPosition
@@ -29,10 +31,12 @@ import Control.Applicative
 import Control.Monad
 import Control.Monad.Primitive
 import Control.Monad.ST
+import Control.Monad.Trans.Writer.CPS
 import Data.Bits hiding (rotate)
 import Data.Foldable (toList, for_)
 import Data.Hashable (Hashable, hashWithSalt, hashUsing)
 import Data.Map (Map)
+import Data.Monoid
 import Data.Primitive.MutVar
 import Data.Set (Set)
 import Data.Word
@@ -45,6 +49,7 @@ import qualified Data.Vector.Unboxed.Mutable as MV
 import qualified System.Console.ANSI         as ANSI
 
 import Dr.Mario.Model.Internal
+import Dr.Mario.Util
 
 color :: Cell -> Maybe Color
 color (Occupied color shape) = Just color
@@ -206,10 +211,12 @@ rotate board pill rot = case orientation (content pill) of
 -- where it's being placed.
 --
 -- Returns 'Nothing' if the 'Pill' is out of bounds or over a non-'Empty' cell.
-place :: Board -> Pill -> Maybe Board
+-- Otherwise returns the new 'Board' and the number of viruses that were
+-- cleared.
+place :: Board -> Pill -> Maybe (Int, Board)
 place board pill = case (placementValid, fastPathValid) of
 	(False, _) -> Nothing
-	(_, True ) -> Just fastPath
+	(_, True ) -> Just (0, fastPath)
 	(_, False) -> Just slowPath
 	where
 	pos1@(Position x1 y1) = bottomLeftPosition pill
@@ -271,8 +278,9 @@ place board pill = case (placementValid, fastPathValid) of
 
 	slowPath = runST $ do
 		mb <- thaw board
-		munsafePlace mb pos1 pos2 (content pill)
-		munsafeFreeze mb
+		liftA2 (,)
+			(munsafePlace mb pos1 pos2 (content pill))
+			(munsafeFreeze mb)
 
 -- | Drop 'Disconnected' pieces, in the columns given by the keys and of the
 -- colors given by the values. Returns 'Nothing' if any column is out of
@@ -382,13 +390,14 @@ minfect mb p col = mset mb p (Occupied col Virus)
 -- is the caller's responsibility to ensure that the pill would be supported
 -- where it's being placed.
 --
--- Returns 'False' (and does nothing else) if the 'Pill' is out of bounds or
--- over a non-'Empty' cell; otherwise returns 'True'.
-mplace :: forall m. PrimMonad m => MBoard (PrimState m) -> Pill -> m Bool
+-- Returns 'Nothing' (and does nothing else) if the 'Pill' is out of bounds or
+-- over a non-'Empty' cell; otherwise returns the number of viruses cleared.
+mplace :: forall m. PrimMonad m => MBoard (PrimState m) -> Pill -> m (Maybe Int)
 mplace mb pill = do
 	valid <- placementValid
-	when valid $ munsafePlace mb pos1 pos2 (content pill)
-	return valid
+	if valid
+		then Just <$> munsafePlace mb pos1 pos2 (content pill)
+		else return Nothing
 	where
 	pos1@(Position x1 y1) = bottomLeftPosition pill
 	pos2@(Position x2 y2) =      otherPosition pill
@@ -407,14 +416,8 @@ mplace mb pill = do
 		       then fmap (Empty==) (munsafeGet mb pos2)
 		       else return True
 
-	infixr 3 `andM`
-	andM :: m Bool -> m Bool -> m Bool
-	andM l r = do
-		v <- l
-		if v then r else return False
-
--- | Doesn't check that the positions are sensible.
-munsafePlace :: PrimMonad m => MBoard (PrimState m) -> Position -> Position -> PillContent -> m ()
+-- | Doesn't check that the positions are sensible. Returns the number of viruses cleared.
+munsafePlace :: PrimMonad m => MBoard (PrimState m) -> Position -> Position -> PillContent -> m Int
 munsafePlace mb pos1 pos2 pc = do
 	ps <- case orientation pc of
 		Horizontal -> do
@@ -431,8 +434,7 @@ munsafePlace mb pos1 pos2 pc = do
 			-- the previous case if desired) is good defensive programming.
 			munsafeSet mb pos1 (Occupied (bottomLeftColor pc) Disconnected)
 			return [pos2]
-	ps <- unsafeClear mb ps
-	unsafeDropAndClear mb ps
+	getSum <$> execWriterT (unsafeClearAndDrop mb ps)
 
 -- | Drop 'Disconnected' pieces, in the columns given by the keys and of the
 -- colors given by the values. Returns 'False' (without changing the board) if
@@ -454,7 +456,7 @@ unsafeGarbageInBounds w pieces = x >= 0 && x' < w where
 munsafeGarbage :: PrimMonad m => MBoard (PrimState m) -> Map Int Color -> m ()
 munsafeGarbage mb pieces = do
 	ps <- M.traverseWithKey go pieces
-	unsafeDropAndClear mb ps
+	fst <$> runWriterT (unsafeDropAndClear mb ps)
 	where
 	y = mheight mb - 1
 	go x col = p <$ munsafeSet mb p (Occupied col Disconnected) where
@@ -465,12 +467,16 @@ munsafeGarbage mb pieces = do
 mclear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m ()
 mclear mb ps = do
 	for_ ps $ \p -> mset mb p Empty
-	unsafeDropAndClear mb
+	fmap fst . runWriterT $ unsafeDropAndClear mb
 		[ p { y = y' }
 		| p <- toList ps
 		, let y' = y p + 1
 		, x p >= 0 && x p < mwidth mb && y p >= 0 && y' < mheight mb
 		]
+
+unzip4 :: [(a,b,c,d)] -> ([a],[b],[c],[d])
+unzip4 [] = ([],[],[],[])
+unzip4 ((a,b,c,d):abcds) = let (as,bs,cs,ds) = unzip4 abcds in (a:as,b:bs,c:cs,d:ds)
 
 -- | @unsafeClear board positions@ takes a board and a collection of positions
 -- on the board which have recently changed, and modifies the board to take
@@ -479,14 +485,16 @@ mclear mb ps = do
 --
 -- It is the caller's responsibility to ensure that the given positions are in
 -- bounds. Under that assumption, the returned positions definitely will be.
-unsafeClear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m (Set Position)
+unsafeClear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> WriterT (Sum Int) m (Set Position)
 unsafeClear mb ps = do
-	(clears_, disconnects_, drops_) <- unzip3 <$> mapM clearSingleMatch (toList ps)
+	(clears_, disconnects_, drops_, viruses_) <- unzip4 <$> mapM clearSingleMatch (toList ps)
 	let clears = S.unions clears_
 	    disconnects = S.unions disconnects_ `S.difference` clears
 	    drops = (S.unions drops_ `S.difference` clears) `S.union` disconnects
+	    viruses = S.unions viruses_
 	forM_ clears $ \p -> munsafeSet mb p Empty
 	forM_ disconnects $ \p -> munsafeModify mb p disconnect
+	tell (Sum (S.size viruses))
 	return drops
 	where
 	disconnect (Occupied color shape) = Occupied color Disconnected
@@ -500,8 +508,8 @@ unsafeClear mb ps = do
 		~[l,r,u,d] <- mapM (mrunLength mb p) [left, right, up, down]
 		let clears = [p { x = x p + dx } | l+r+1 >= 4, dx <- [-l .. r]]
 		          ++ [p { y = y p + dy } | u+d+1 >= 4, dy <- [-d .. u]]
-		(disconnects_, drops_) <- unzip <$> mapM clearSingleCell clears
-		return (S.fromList clears, S.unions disconnects_, S.unions drops_)
+		(disconnects_, drops_, viruses_) <- unzip3 <$> mapM clearSingleCell clears
+		return (S.fromList clears, S.unions disconnects_, S.unions drops_, S.unions viruses_)
 
 	clearSingleCell p = do
 		old <- munsafeGet mb p
@@ -511,12 +519,15 @@ unsafeClear mb ps = do
 		    	Occupied _ East  -> ifInBounds left
 		    	Occupied _ West  -> ifInBounds right
 		    	_ -> S.empty
+		    viruses = case old of
+		    	Occupied _ Virus -> S.singleton p
+		    	_ -> S.empty
 		    drops = ifInBounds up
 		    ifInBounds dir = let p'@(Position x y) = unsafeMove dir p in
 		    	if x >= 0 && x < mwidth mb && y >= 0 && y < mheight mb
 		    	then S.singleton p'
 		    	else S.empty
-		return (disconnects, drops)
+		return (disconnects, drops, viruses)
 
 -- | @unsafeDrop board positions@ takes a board and a collection of positions
 -- on the board which may have recently become unsupported, and modifies the
@@ -595,7 +606,7 @@ mcolorRunLength mb p dir col = go (unsafeMove dir p) 0 where
 --
 -- Caller is responsible for ensuring that the positions provided are in
 -- bounds.
-unsafeDropAndClear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m ()
+unsafeDropAndClear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> WriterT (Sum Int) m ()
 unsafeDropAndClear mb ps
 	| null ps = return ()
 	| otherwise = unsafeDrop mb ps >>= unsafeClearAndDrop mb
@@ -604,7 +615,7 @@ unsafeDropAndClear mb ps
 --
 -- Caller is responsible for ensuring that the positions provided are in
 -- bounds.
-unsafeClearAndDrop :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m ()
+unsafeClearAndDrop :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> WriterT (Sum Int) m ()
 unsafeClearAndDrop mb ps
 	| null ps = return ()
 	| otherwise = unsafeClear mb ps >>= unsafeDropAndClear mb
@@ -627,6 +638,24 @@ decodePosition seed = Position
 	{ x = fromIntegral (seed .&. 0x0007)
 	, y = fromIntegral ((seed .&. 0x0f00) `shiftR` 8)
 	}
+
+-- | The position that Dr. Mario initially launches a pill at on the NES.
+startingBottomLeftPosition :: Position
+startingBottomLeftPosition = Position 3 15
+
+-- | The position of the other half of a pill when Dr. Mario initially launches
+-- it on the NES.
+startingOtherPosition :: Position
+startingOtherPosition = Position 4 15
+
+-- | The orientation that Dr. Mario initially launches a pill in on the NES.
+startingOrientation :: Orientation
+startingOrientation = Horizontal
+
+-- | Initialize a pill in the position and orientation that Dr. Mario launches
+-- them in on the NES.
+launchPill :: Color -> Color -> Pill
+launchPill l r = Pill (PillContent startingOrientation l r) startingBottomLeftPosition
 
 -- | A call to @unsafeRandomViruses w h n mpos mcol@ will generate a random
 -- board of width @w@, height @h@, and with @n@ viruses, using the same
