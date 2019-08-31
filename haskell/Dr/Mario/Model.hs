@@ -3,11 +3,12 @@ module Dr.Mario.Model
 	( Color(..)
 	, Shape(..)
 	, Cell(..), color, shape
-	, Orientation(..)
+	, Orientation(..), bottomLeftShape, otherShape
 	, Position(..)
 	, Direction, left, right, down
 	, Rotation(..)
-	, PillContent(..), Pill(..), otherPosition
+	, PillContent(..), bottomLeftCell, otherCell
+	, Pill(..), otherPosition
 	, Board
 	, emptyBoard
 	, width, height
@@ -90,6 +91,20 @@ instance Hashable Pill where
 	hashWithSalt s pill = s
 		`hashWithSalt` content pill
 		`hashWithSalt` bottomLeftPosition pill
+
+bottomLeftShape :: Orientation -> Shape
+bottomLeftShape Horizontal = West
+bottomLeftShape Vertical = South
+
+otherShape :: Orientation -> Shape
+otherShape Horizontal = East
+otherShape Vertical = North
+
+bottomLeftCell :: PillContent -> Cell
+bottomLeftCell c = Occupied (bottomLeftColor c) (bottomLeftShape (orientation c))
+
+otherCell :: PillContent -> Cell
+otherCell c = Occupied (otherColor c) (otherShape (orientation c))
 
 otherPosition :: Pill -> Position
 otherPosition pill = unsafeMove dir pos where

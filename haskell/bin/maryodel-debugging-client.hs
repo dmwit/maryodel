@@ -127,19 +127,10 @@ renderPlayerState n s = vBox . map hCenter $
 		Control n _ -> "next forced drop: " ++ show n
 	]
 
-bottomLeftCell, otherCell :: PillContent -> Cell
-bottomLeftCell pc = Occupied (bottomLeftColor pc) $ case orientation pc of
-	Dr.M.Horizontal -> West
-	Dr.M.Vertical   -> South
-
-otherCell pc = Occupied (otherColor pc) $ case orientation pc of
-	Dr.M.Horizontal -> East
-	Dr.M.Vertical   -> North
-
 renderPillContent :: PillContent -> Widget n
 renderPillContent pc = case orientation pc of
-	Dr.M.Horizontal -> renderCell (bottomLeftCell pc) <+> renderCell (     otherCell pc)
-	Dr.M.Vertical   -> renderCell (     otherCell pc) <=> renderCell (bottomLeftCell pc)
+	Dr.M.Horizontal -> renderCell (Dr.M.bottomLeftCell pc) <+> renderCell (Dr.M.otherCell      pc)
+	Dr.M.Vertical   -> renderCell (Dr.M.otherCell      pc) <=> renderCell (Dr.M.bottomLeftCell pc)
 
 renderBoard :: Board -> ModeState -> Widget n
 renderBoard b m = border . vBox $
@@ -157,8 +148,8 @@ renderBoard b m = border . vBox $
 	renderPosition = renderCell . case m of
 		Cleanup -> fromMaybe Empty . get b
 		Control _ pill -> \pos -> case () of
-			_ | bottomLeftPosition pill == pos -> bottomLeftCell (content pill)
-			  |      otherPosition pill == pos ->      otherCell (content pill)
+			_ | bottomLeftPosition pill == pos -> Dr.M.bottomLeftCell (content pill)
+			  |      otherPosition pill == pos -> Dr.M.otherCell      (content pill)
 			  | otherwise -> fromMaybe Empty (get b pos)
 
 renderCell :: Cell -> Widget n
