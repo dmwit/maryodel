@@ -541,6 +541,8 @@ instance Repeatable (Position, Cell)
 instance Repeatable ClientMessage
 instance Repeatable ServerMessage
 
+-- | The following 'Repeatable' instances exist: 'Cell'; 'ButtonPress';
+-- @('Position', 'Cell')@; 'ClientMessage'; 'ServerMessage'.
 instance (Protocol a, Repeatable a) => Protocol [a] where
 	parseT = many parseT
 	pp xs = foldMap pp xs
