@@ -444,11 +444,8 @@ munsafePlace mb pos1 pos2 pc = do
 			munsafeSet mb pos2 (Occupied (     otherColor pc) North)
 			return [pos1, pos2]
 		_ -> do
-			-- This is going to get cleared anyway, but making it
-			-- Disconnected instead of South (so that one could merge with
-			-- the previous case if desired) is good defensive programming.
 			munsafeSet mb pos1 (Occupied (bottomLeftColor pc) Disconnected)
-			return [pos2]
+			return [pos1]
 	getSum <$> execWriterT (unsafeClearAndDrop mb ps)
 
 -- | Drop 'Disconnected' pieces, in the columns given by the keys and of the
