@@ -8,6 +8,7 @@ module Dr.Mario.Model.Internal
 	, Cell(..)
 	, Board(..)
 	, emptyBoard
+	, MBoard(..)
 	) where
 
 import Data.Bits
@@ -20,6 +21,7 @@ import qualified Data.Vector.Generic              as DVG
 import qualified Data.Vector.Generic.Mutable.Base as DVGMB
 import qualified Data.Vector.Primitive.Mutable    as DVPM
 import qualified Data.Vector.Unboxed              as U
+import qualified Data.Vector.Unboxed.Mutable      as MV
 
 data Color = Red | Yellow | Blue deriving (Bounded, Enum, Eq, Ord, Read, Show)
 -- | A horizontal pill has a 'West' shape to the left of an 'East' shape, and a
@@ -106,3 +108,8 @@ emptyBoard
 emptyBoard w h = Board h (V.replicate w (U.replicate h Empty))
 
 instance Default Board where def = emptyBoard 8 16
+
+data MBoard s = MBoard
+	{ mwidth, mheight :: !Int
+	, mcells :: !(MV.MVector s Cell)
+	}

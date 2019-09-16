@@ -317,11 +317,6 @@ clear board ps = runST $ do
 	mclear mb ps
 	munsafeFreeze mb
 
-data MBoard s = MBoard
-	{ mwidth, mheight :: !Int
-	, mcells :: !(MV.MVector s Cell)
-	}
-
 -- | Just a convenient shorthand for the type of 'MBoard' that can be used in
 -- 'IO'.
 type IOBoard = MBoard (PrimState IO)
