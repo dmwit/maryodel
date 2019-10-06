@@ -14,7 +14,7 @@ module Dr.Mario.Model
 	, width, height
 	, get, getColor, unsafeGet
 	, move, rotate, rotateContent, place, garbage, clear
-	, randomBoard, unsafeRandomViruses
+	, randomBoard, unsafeRandomViruses, randomPillContents
 	, advanceRNG, decodeColor, decodePosition, pillContentTable
 	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill
 	, pp
@@ -834,3 +834,6 @@ mrandomPillContents mrng = do
 	    	go m' (i-1)
 	go 0 126
 	V.unsafeFreeze mpcs
+
+randomPillContents :: Word16 -> V.Vector PillContent
+randomPillContents seed = runST (mnewRNG seed >>= mrandomPillContents)
