@@ -15,7 +15,7 @@ module Dr.Mario.Model
 	, get, getColor, unsafeGet
 	, move, rotate, rotateContent, place, garbage, clear
 	, randomBoard, unsafeRandomViruses
-	, advanceRNG, decodeColor, decodePosition
+	, advanceRNG, decodeColor, decodePosition, pillContentTable
 	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill
 	, pp
 	, MBoard, IOBoard
@@ -24,7 +24,7 @@ module Dr.Mario.Model
 	, mwidth, mheight
 	, mget, munsafeGet
 	, minfect, mplace, mgarbage, mclear
-	, mrandomBoard, munsafeRandomViruses
+	, mrandomBoard, munsafeRandomViruses, mrandomPillContents
 	, mnewRNG, mrandomColor, mrandomPosition
 	) where
 
@@ -46,7 +46,8 @@ import qualified Data.Map.Strict             as M
 import qualified Data.Set                    as S
 import qualified Data.Vector                 as V
 import qualified Data.Vector.Unboxed         as U
-import qualified Data.Vector.Unboxed.Mutable as MV
+import qualified Data.Vector.Mutable         as MV
+import qualified Data.Vector.Unboxed.Mutable as MU
 import qualified System.Console.ANSI         as ANSI
 
 import Dr.Mario.Model.Internal
@@ -326,7 +327,7 @@ memptyBoard
 	=> Int -- ^ width
 	-> Int -- ^ height
 	-> m (MBoard (PrimState m))
-memptyBoard w h = MBoard w h <$> MV.new (w*h)
+memptyBoard w h = MBoard w h <$> MU.new (w*h)
 
 thaw :: PrimMonad m => Board -> m (MBoard (PrimState m))
 thaw board = do
@@ -358,7 +359,7 @@ mfreeze MBoard { mwidth = w, mheight = h, mcells = mcs } = do
 
 -- | Doesn't do bounds checking.
 munsafeGet :: PrimMonad m => MBoard (PrimState m) -> Position -> m Cell
-munsafeGet mb p = MV.unsafeRead (mcells mb) (x p * mheight mb + y p)
+munsafeGet mb p = MU.unsafeRead (mcells mb) (x p * mheight mb + y p)
 
 mget :: PrimMonad m => MBoard (PrimState m) -> Position -> m (Maybe Cell)
 mget mb p
@@ -368,7 +369,7 @@ mget mb p
 -- | Doesn't do bounds checking, and doesn't promise anything about clears or
 -- gravity.
 munsafeSet :: PrimMonad m => MBoard (PrimState m) -> Position -> Cell -> m ()
-munsafeSet mb p c = MV.unsafeWrite (mcells mb) (x p * mheight mb + y p) c
+munsafeSet mb p c = MU.unsafeWrite (mcells mb) (x p * mheight mb + y p) c
 
 -- | Out-of-bounds writes are silently discarded. Doesn't promise anything
 -- about clears or gravity.
@@ -382,8 +383,8 @@ mset mb p cell
 -- Doesn't do bounds checking or promise anything about clears or gravity.
 munsafeModify :: PrimMonad m => MBoard (PrimState m) -> Position -> (Cell -> Cell) -> m Cell
 munsafeModify mb p f = do
-	c <- MV.unsafeRead v i
-	MV.unsafeWrite v i (f c)
+	c <- MU.unsafeRead v i
+	MU.unsafeWrite v i (f c)
 	return c
 	where
 	v = mcells mb
@@ -804,3 +805,32 @@ mrandomBoard seed level = do
 	where
 	height     = max 9 . min 12 $ (level+5) `shiftR` 1
 	virusCount = max 4 . min 84 $ (level+1) `shiftL` 2
+
+-- | Turn a random number generator action into an action that produces a
+-- random 'PillContent' in the same weird way that Dr. Mario does.
+mrandomPillContent :: Monad m => m Word16 -> Word16 -> m (Word16, PillContent)
+mrandomPillContent mrng pc = do
+	seed <- mrng
+	let pc' = ((shiftR seed 8 .&. 0xf) + pc) `mod` 9
+	pure (pc', pillContentTable V.! fromIntegral pc')
+
+-- | The nine possible (horizontal) pills.
+pillContentTable :: V.Vector PillContent
+pillContentTable = V.fromListN 9
+	[ PillContent Horizontal l r
+	| l <- [Yellow, Red, Blue]
+	, r <- [Yellow, Red, Blue]
+	]
+
+-- | Generate 128 pills in exactly the same way Dr. Mario does. See e.g.
+-- 'mnewRNG' for the first argument.
+mrandomPillContents :: PrimMonad m => m Word16 -> m (V.Vector PillContent)
+mrandomPillContents mrng = do
+	mpcs <- MV.new 128
+	let go m (-1) = mrandomPillContent mrng m >>= MV.unsafeWrite mpcs 127 . snd
+	    go m i = do
+	    	(m', pc) <- mrandomPillContent mrng m
+	    	MV.unsafeWrite mpcs i pc
+	    	go m' (i-1)
+	go 0 126
+	V.unsafeFreeze mpcs
