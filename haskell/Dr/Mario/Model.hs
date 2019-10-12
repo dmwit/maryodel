@@ -12,7 +12,7 @@ module Dr.Mario.Model
 	, Board
 	, emptyBoard
 	, width, height
-	, get, getColor, unsafeGet
+	, get, getColor, unsafeGet, ofoldMap
 	, move, rotate, rotateContent, place, garbage, clear
 	, randomBoard, unsafeRandomViruses, randomPillContents
 	, advanceRNG, decodeColor, decodePosition, pillContentTable
@@ -22,7 +22,7 @@ module Dr.Mario.Model
 	, thaw, mfreeze, munsafeFreeze
 	, memptyBoard
 	, mwidth, mheight
-	, mget, munsafeGet
+	, mget, munsafeGet, mofoldMap
 	, minfect, mplace, mgarbage, mclear
 	, mrandomBoard, munsafeRandomViruses, mrandomPillContents
 	, mnewRNG, mrandomColor, mrandomPosition
@@ -837,3 +837,15 @@ mrandomPillContents mrng = do
 
 randomPillContents :: Word16 -> V.Vector PillContent
 randomPillContents seed = runST (mnewRNG seed >>= mrandomPillContents)
+
+-- | A monomorphic 'foldMap'. No promises about what order the 'Cell's are
+-- visited in.
+ofoldMap :: Monoid a => (Cell -> a) -> Board -> a
+ofoldMap f = foldMap (U.foldr ((<>) . f) mempty) . cells
+
+-- | A monomorphic 'foldMap'-alike. No promises about what order the 'Cell's
+-- are visited in.
+mofoldMap :: (PrimMonad m, Monoid a) => (Cell -> a) -> MBoard (PrimState m) -> m a
+mofoldMap f MBoard { mcells = v } = go (MU.length v - 1) where
+	go (-1) = pure mempty
+	go i = liftA2 ((<>) . f) (MU.unsafeRead v i) (go (i-1))
