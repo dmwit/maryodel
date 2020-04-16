@@ -10,9 +10,9 @@ module Dr.Mario.Model
 	, PillContent(..), bottomLeftCell, otherCell
 	, Pill(..), otherPosition
 	, Board
-	, emptyBoard
+	, emptyBoard, unsafeGenerateBoard
 	, width, height
-	, get, getColor, unsafeGet, ofoldMap
+	, get, getColor, unsafeGet, ofoldMap, unsafeMap
 	, move, rotate, rotateContent, place, garbage, clear
 	, randomBoard, unsafeRandomViruses, randomPillContents
 	, advanceRNG, decodeColor, decodePosition, pillContentTable
@@ -126,6 +126,14 @@ down  = Direction   0 (-1)
 
 width :: Board -> Int
 width = V.length . cells
+
+-- | Unsafe because it does not perform clears or gravity if those are needed.
+unsafeGenerateBoard
+	:: Int -- ^ width
+	-> Int -- ^ height
+	-> (Position -> Cell) -- ^ board contents
+	-> Board
+unsafeGenerateBoard w h f = Board h (V.generate w (\x -> U.generate h (f . Position x)))
 
 get :: Board -> Position -> Maybe Cell
 get b p = (V.!? x p) >=> (U.!? y p) $ cells b
@@ -849,3 +857,8 @@ mofoldMap :: (PrimMonad m, Monoid a) => (Cell -> a) -> MBoard (PrimState m) -> m
 mofoldMap f MBoard { mcells = v } = go (MU.length v - 1) where
 	go (-1) = pure mempty
 	go i = liftA2 ((<>) . f) (MU.unsafeRead v i) (go (i-1))
+
+-- | A monomorphic 'fmap'. It is unsafe because it does not perform clears or
+-- gravity after the map.
+unsafeMap :: (Cell -> Cell) -> Board -> Board
+unsafeMap f b = b { cells = V.map (U.map f) (cells b) }
