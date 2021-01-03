@@ -32,7 +32,8 @@ main = do
 			}
 		}
 	gs <- currentGameState conn
-	s <- customMain (mkVty def) (Just eventChan) (app conn ph) def { gameState = gs }
+	vty <- mkVty def
+	s <- customMain vty (mkVty def) (Just eventChan) (app conn ph) def { gameState = gs }
 	unless (serverHasQuit s) (killServer def { ksHandle = ph })
 
 -- known bugs:
