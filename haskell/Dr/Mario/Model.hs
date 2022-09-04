@@ -5,14 +5,14 @@ module Dr.Mario.Model
 	, Cell(..), color, shape
 	, Orientation(..), bottomLeftShape, otherShape
 	, Position(..)
-	, Direction, left, right, down
+	, Direction, left, right, down, unsafeMove
 	, Rotation(..)
 	, PillContent(..), bottomLeftCell, otherCell
 	, Pill(..), otherPosition
 	, Board
 	, emptyBoard, unsafeGenerateBoard
 	, width, height
-	, get, getColor, unsafeGet, ofoldMap, unsafeMap
+	, get, getColor, unsafeGet, ofoldMap, ofoldMapWithKey, unsafeMap
 	, move, rotate, rotateContent, place, garbage, clear
 	, randomBoard, unsafeRandomViruses, randomPillContents
 	, advanceRNG, decodeColor, decodePosition, pillContentTable
@@ -22,9 +22,9 @@ module Dr.Mario.Model
 	, thaw, mfreeze, munsafeFreeze
 	, memptyBoard
 	, mwidth, mheight
-	, mget, munsafeGet, mofoldMap
+	, mget, munsafeGet, mofoldMap, mofoldMapWithKey
 	, minfect, mplace, mgarbage, mclear
-	, mrandomBoard, munsafeRandomViruses, mrandomPillContents
+	, mrandomBoard, munsafeRandomBoard, munsafeRandomViruses, mrandomPillContents
 	, mnewRNG, mrandomColor, mrandomPosition
 	) where
 
@@ -805,9 +805,18 @@ munsafeRandomViruses mb virusCount mpos mc
 -- | Given a seed and a virus level (usually in the range 0-24), generate a
 -- random board of the standard size in the same way Dr. Mario does.
 mrandomBoard :: PrimMonad m => Word16 -> Int -> m (MBoard (PrimState m))
-mrandomBoard seed level = do
+mrandomBoard seed level = mnewRNG seed >>= flip munsafeRandomBoard level
+
+-- | Given a random number generator (see also 'mnewRNG') and a virus level
+-- (usually in the range 0-24), generate a random board of the standard size in
+-- the same way Dr. Mario does.
+--
+-- This is unsafe because on higher levels, it's possible for bad early choices
+-- to make it impossible to place the required number of viruses. This function
+-- loops forever when that happens.
+munsafeRandomBoard :: PrimMonad m => m Word16 -> Int -> m (MBoard (PrimState m))
+munsafeRandomBoard mrng level = do
 	mb <- memptyBoard 8 16
-	mrng <- mnewRNG seed
 	munsafeRandomViruses mb virusCount (mrandomPosition height mrng) (mrandomColor mrng)
 	return mb
 	where
@@ -851,12 +860,27 @@ randomPillContents seed = runST (mnewRNG seed >>= mrandomPillContents)
 ofoldMap :: Monoid a => (Cell -> a) -> Board -> a
 ofoldMap f = foldMap (U.foldr ((<>) . f) mempty) . cells
 
+-- | Visit all the cells in an unspecified order, yielding their position and
+-- value.
+ofoldMapWithKey :: Monoid a => (Position -> Cell -> a) -> Board -> a
+ofoldMapWithKey f = V.ifoldr (\x -> flip (U.ifoldr (\y -> (<>) . f (Position x y)))) mempty . cells
+
 -- | A monomorphic 'foldMap'-alike. No promises about what order the 'Cell's
 -- are visited in.
 mofoldMap :: (PrimMonad m, Monoid a) => (Cell -> a) -> MBoard (PrimState m) -> m a
 mofoldMap f MBoard { mcells = v } = go (MU.length v - 1) where
 	go (-1) = pure mempty
 	go i = liftA2 ((<>) . f) (MU.unsafeRead v i) (go (i-1))
+
+mofoldMapWithKey :: (PrimMonad m, Monoid a) => (Position -> Cell -> a) -> MBoard (PrimState m) -> m a
+mofoldMapWithKey f b = go (MU.length v - 1) where
+	go (-1) = pure mempty
+	go i = liftA2 ((<>) . f (indexToPos i)) (MU.unsafeRead v i) (go (i-1))
+
+	h = mheight b
+	v = mcells b
+	indexToPos i = Position { x = x_, y = y_ } where
+		(x_, y_) = i `quotRem` h
 
 -- | A monomorphic 'fmap'. It is unsafe because it does not perform clears or
 -- gravity after the map.
