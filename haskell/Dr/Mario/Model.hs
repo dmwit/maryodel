@@ -76,11 +76,17 @@ data Pill = Pill
 	} deriving (Eq, Ord, Read, Show)
 
 instance Hashable Orientation where hashWithSalt = hashUsing fromEnum
+instance Hashable Rotation    where hashWithSalt = hashUsing fromEnum
 
 instance Hashable Position where
 	hashWithSalt s pos = s
 		`hashWithSalt` x pos
 		`hashWithSalt` y pos
+
+instance Hashable Direction where
+	hashWithSalt s Direction { dx = x, dy = y } = s
+		`hashWithSalt` x
+		`hashWithSalt` y
 
 instance Hashable PillContent where
 	hashWithSalt s pc = s
