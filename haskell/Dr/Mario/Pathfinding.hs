@@ -154,7 +154,7 @@ vertPills lc rc = \pos dx dy -> tail $ [undefined
 smallerBox :: BoxMove -> BoxMove -> BoxMove
 smallerBox m m' = if abs (xDelta m) < abs (xDelta m') then m else m'
 
--- | Like 'liftA2', but with a 'join' at the end.
+-- | Like 'liftA2', but with a 'Control.Monad.join' at the end.
 liftJ2 :: Monad m => (a -> b -> m c) -> m a -> m b -> m c
 liftJ2 f ma mb = do
 	a <- ma
