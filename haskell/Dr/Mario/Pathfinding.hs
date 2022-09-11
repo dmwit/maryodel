@@ -63,7 +63,7 @@ unsafeApproxReachable b p = HM.fromListWith smallerBox $ concatMap dropColumn [l
 		go y el er =
 			(if er
 			 then if       not (ed && edr) then horizPillsP pos dx dy else []
-			 else if el && not (ed && edl) then horizPillsP (Position xl y) dxl dy else []
+			 else if el && not (ed && edl) then horizPillsP (Position xl y) dx dy else []
 			) ++
 			(if ed then go y' edl edr else vertPillsP pos dx dy)
 			where
@@ -110,7 +110,7 @@ munsafeApproxReachable mb p = do
 			pure
 				$ (if er
 				   then if       not (ed && edr) then horizPillsP pos dx dy else []
-				   else if el && not (ed && edl) then horizPillsP (Position xl y) dxl dy else []
+				   else if el && not (ed && edl) then horizPillsP (Position xl y) dx dy else []
 				  )
 				++ rest
 			where
