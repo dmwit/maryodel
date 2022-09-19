@@ -9,6 +9,7 @@ module Dr.Mario.Model
 	, Rotation(..)
 	, PillContent(..), bottomLeftCell, otherCell
 	, Pill(..), otherPosition
+	, CleanupResults(..)
 	, Board
 	, emptyBoard, unsafeGenerateBoard
 	, width, height
@@ -37,6 +38,7 @@ import Data.Bits hiding (rotate)
 import Data.Foldable (toList, for_)
 import Data.Hashable (Hashable, hashWithSalt, hashUsing)
 import Data.Map (Map)
+import Data.Semigroup
 import Data.Monoid
 import Data.Primitive.MutVar
 import Data.Set (Set)
@@ -241,12 +243,11 @@ rotate board pill rot = case orientation (content pill) of
 -- where it's being placed.
 --
 -- Returns 'Nothing' if the 'Pill' is out of bounds or over a non-'Empty' cell.
--- Otherwise returns the new 'Board' and the number of viruses that were
--- cleared.
-place :: Board -> Pill -> Maybe (Int, Board)
+-- Otherwise returns the new 'Board' and a summary of what all happened.
+place :: Board -> Pill -> Maybe (CleanupResults, Board)
 place board pill = case (placementValid, fastPathValid) of
 	(False, _) -> Nothing
-	(_, True ) -> Just (0, fastPath)
+	(_, True ) -> Just (mempty, fastPath)
 	(_, False) -> Just slowPath
 	where
 	pos1@(Position x1 y1) = bottomLeftPosition pill
@@ -416,8 +417,8 @@ minfect mb p col = mset mb p (Occupied col Virus)
 -- where it's being placed.
 --
 -- Returns 'Nothing' (and does nothing else) if the 'Pill' is out of bounds or
--- over a non-'Empty' cell; otherwise returns the number of viruses cleared.
-mplace :: forall m. PrimMonad m => MBoard (PrimState m) -> Pill -> m (Maybe Int)
+-- over a non-'Empty' cell.
+mplace :: forall m. PrimMonad m => MBoard (PrimState m) -> Pill -> m (Maybe CleanupResults)
 mplace mb pill = do
 	valid <- placementValid
 	if valid
@@ -441,8 +442,8 @@ mplace mb pill = do
 		       then fmap (Empty==) (munsafeGet mb pos2)
 		       else return True
 
--- | Doesn't check that the positions are sensible. Returns the number of viruses cleared.
-munsafePlace :: PrimMonad m => MBoard (PrimState m) -> Position -> Position -> PillContent -> m Int
+-- | Doesn't check that the positions are sensible.
+munsafePlace :: PrimMonad m => MBoard (PrimState m) -> Position -> Position -> PillContent -> m CleanupResults
 munsafePlace mb pos1 pos2 pc = do
 	ps <- case orientation pc of
 		Horizontal -> do
@@ -456,7 +457,7 @@ munsafePlace mb pos1 pos2 pc = do
 		_ -> do
 			munsafeSet mb pos1 (Occupied (bottomLeftColor pc) Disconnected)
 			return [pos1]
-	getSum <$> execWriterT (unsafeClearAndDrop mb ps)
+	unsafeClearAndDrop mb ps
 
 -- | Drop 'Disconnected' pieces, in the columns given by the keys and of the
 -- colors given by the values. Returns 'False' (without changing the board) if
@@ -474,11 +475,10 @@ unsafeGarbageInBounds w pieces = x >= 0 && x' < w where
 	(x , _) = M.findMin pieces
 	(x', _) = M.findMax pieces
 
+-- TODO: doesn't this handle overwriting half of a horizontal pill incorrectly?
 -- | Doesn't check that the columns are in-bounds.
-munsafeGarbage :: PrimMonad m => MBoard (PrimState m) -> Map Int Color -> m ()
-munsafeGarbage mb pieces = do
-	ps <- M.traverseWithKey go pieces
-	fst <$> runWriterT (unsafeDropAndClear mb ps)
+munsafeGarbage :: PrimMonad m => MBoard (PrimState m) -> Map Int Color -> m CleanupResults
+munsafeGarbage mb pieces = M.traverseWithKey go pieces >>= unsafeDropAndClear mb
 	where
 	y = mheight mb - 1
 	go x col = p <$ munsafeSet mb p (Occupied col Disconnected) where
@@ -486,10 +486,10 @@ munsafeGarbage mb pieces = do
 
 -- | Set the given positions to 'Empty', then apply gravity and clear
 -- four-in-a-rows.
-mclear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m ()
+mclear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m CleanupResults
 mclear mb ps = do
 	for_ ps $ \p -> mset mb p Empty
-	fmap fst . runWriterT $ unsafeDropAndClear mb
+	unsafeDropAndClear mb
 		[ p { y = y' }
 		| p <- toList ps
 		, let y' = y p + 1
@@ -558,7 +558,7 @@ unsafeClear mb ps = do
 --
 -- It is the caller's responsibility to ensure that the given positions are in
 -- bounds. Under that assumption, the returned positions definitely will be.
-unsafeDrop :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m (Set Position)
+unsafeDrop :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> WriterT (Max Int) m (Set Position)
 unsafeDrop mb ps = do
 	ps_ <- mapM dropSingle (toList ps)
 	let ps' = S.toAscList . S.unions $ ps_
@@ -581,6 +581,7 @@ unsafeDrop mb ps = do
 					    p'' = p { y = y'' }
 					munsafeSet mb p  Empty
 					munsafeSet mb p' here
+					tell (Max dy)
 					if y'' >= mheight mb
 						then return (S.singleton p')
 						else S.insert p' <$> dropSingle p''
@@ -601,6 +602,7 @@ unsafeDrop mb ps = do
 			munsafeSet mb p' Empty
 			munsafeSet mb pDown   here
 			munsafeSet mb pDown' there
+			tell (Max dy)
 			if yUp >= mheight mb
 				then return drops
 				else liftA2 (\ls rs -> S.unions [drops, ls, rs]) (dropSingle pUp) (dropSingle pUp')
@@ -624,23 +626,43 @@ mcolorRunLength mb p dir col = go (unsafeMove dir p) 0 where
 			Just col' | col' == col -> go (unsafeMove dir p) $! n+1
 			_ -> return n
 
+-- | A compact summary of what happened during the cleanup phase: how many
+-- viruses were cleared, and how many rows of fall time were incurred after
+-- each clear. There will always be (exactly) one entry in 'rowsFallen' for
+-- each round of clearing there is; in particular this means that its length
+-- tells you the number of times a clear animation happened.
+data CleanupResults = CleanupResults
+	{ clears :: {-# UNPACK #-} !Int
+	, rowsFallen :: [Int]
+	} deriving (Eq, Ord, Read, Show)
+
+instance Monoid CleanupResults where mempty = CleanupResults 0 []
+instance Semigroup CleanupResults where
+	CleanupResults c ft <> CleanupResults c' ft' = CleanupResults (c+c') (ft <> ft')
+
 -- | Loop applying gravity and clearing 4-in-a-rows, until no changes are made.
 --
 -- Caller is responsible for ensuring that the positions provided are in
 -- bounds.
-unsafeDropAndClear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> WriterT (Sum Int) m ()
+unsafeDropAndClear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m CleanupResults
 unsafeDropAndClear mb ps
-	| null ps = return ()
-	| otherwise = unsafeDrop mb ps >>= unsafeClearAndDrop mb
+	| null ps = return CleanupResults { clears = 0, rowsFallen = [] }
+	| otherwise = do
+		(ps', Max n) <- runWriterT (unsafeDrop mb ps)
+		res <- unsafeClearAndDrop mb ps'
+		return res { rowsFallen = max 0 n : rowsFallen res }
 
 -- | Loop clearing 4-in-a-rows and applying gravity, until no changes are made.
 --
 -- Caller is responsible for ensuring that the positions provided are in
 -- bounds.
-unsafeClearAndDrop :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> WriterT (Sum Int) m ()
+unsafeClearAndDrop :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m CleanupResults
 unsafeClearAndDrop mb ps
-	| null ps = return ()
-	| otherwise = unsafeClear mb ps >>= unsafeDropAndClear mb
+	| null ps = return CleanupResults { clears = 0, rowsFallen = [] }
+	| otherwise = do
+		(ps', Sum n) <- runWriterT (unsafeClear mb ps)
+		res <- unsafeDropAndClear mb ps'
+		return res { clears = n + clears res }
 
 -- | An implementation of the random number generator. Given a current RNG
 -- state, produces the next one.
