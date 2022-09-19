@@ -2,6 +2,7 @@ module Dr.Mario.Pathfinding (
 	BoxMove(..),
 	unsafeApproxReachable,
 	munsafeApproxReachable,
+	smallerBox,
 	) where
 
 import Control.Applicative
