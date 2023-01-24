@@ -5,6 +5,7 @@ module Dr.Mario.Pathfinding (
 	smallerBox,
 	) where
 
+import Data.Aeson
 import Control.Applicative
 import Control.Monad.Loops
 import Control.Monad.Primitive
@@ -42,6 +43,19 @@ instance Hashable BoxMove where
 		`hashWithSalt` dx
 		`hashWithSalt` dy
 		`hashWithSalt` fr
+
+boxMoveToTuple :: BoxMove -> (Rotation, Int, Int, Maybe Rotation)
+boxMoveToTuple b = (initialRotation b, xDelta b, yDelta b, finalRotation b)
+
+tupleToBoxMove :: (Rotation, Int, Int, Maybe Rotation) -> BoxMove
+tupleToBoxMove (irot, dx, dy, frot) = BoxMove irot dx dy frot
+
+instance ToJSON BoxMove where
+	toJSON = toJSON . boxMoveToTuple
+	toEncoding = toEncoding . boxMoveToTuple
+
+instance FromJSON BoxMove where
+	parseJSON v = tupleToBoxMove <$> parseJSON v
 
 -- | Approximate the reachable pill locations. This may return both false
 -- positives (see also the commentary on 'BoxMove' about drop speed) and false

@@ -1,4 +1,6 @@
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+
 module Dr.Mario.Model
 	( Color(..)
 	, Shape(..)
@@ -34,6 +36,8 @@ import Control.Monad
 import Control.Monad.Primitive
 import Control.Monad.ST
 import Control.Monad.Trans.Writer.CPS
+import Data.Aeson
+import Data.Aeson.Types
 import Data.Bits hiding (rotate)
 import Data.Foldable (toList, for_)
 import Data.Hashable (Hashable, hashWithSalt, hashUsing)
@@ -80,10 +84,46 @@ data Pill = Pill
 instance Hashable Orientation where hashWithSalt = hashUsing fromEnum
 instance Hashable Rotation    where hashWithSalt = hashUsing fromEnum
 
+orientationChar :: Orientation -> Char
+orientationChar = \case
+	Horizontal -> '↔'
+	Vertical -> '↕'
+
+rotationChar :: Rotation -> Char
+rotationChar = \case
+	Clockwise -> '↻'
+	Counterclockwise -> '↺'
+
+instance ToJSON   Orientation where toJSON = toJSON . orientationChar
+instance ToJSON   Rotation    where toJSON = toJSON . rotationChar
+
+parseOrientation :: Parser Orientation -> Char -> Parser Orientation
+parseOrientation err = \case
+	'↔' -> pure Horizontal
+	'↕' -> pure Vertical
+	_ -> err
+
+instance FromJSON Orientation where
+	parseJSON v = parseJSON v >>= parseOrientation err where
+		err = typeMismatch "Orientation (\"↔\" or \"↕\")" v
+
+parseRotation :: Parser Rotation -> Char -> Parser Rotation
+parseRotation err = \case
+	'↻' -> pure Clockwise
+	'↺' -> pure Counterclockwise
+	_ -> err
+
+instance FromJSON Rotation where
+	parseJSON v = parseJSON v >>= parseRotation err where
+		err = typeMismatch "Rotation (\"↻\" or \"↺\")" v
+
 instance Hashable Position where
 	hashWithSalt s pos = s
 		`hashWithSalt` x pos
 		`hashWithSalt` y pos
+
+instance ToJSON Position where toJSON pos = toJSON (x pos, y pos)
+instance FromJSON Position where parseJSON v = uncurry Position <$> parseJSON v
 
 instance Hashable Direction where
 	hashWithSalt s Direction { dx = x, dy = y } = s
@@ -96,10 +136,31 @@ instance Hashable PillContent where
 		`hashWithSalt` bottomLeftColor pc
 		`hashWithSalt` otherColor pc
 
+instance ToJSON PillContent where
+	toJSON pc = toJSON
+		[ orientationChar (orientation pc)
+		, colorChar (bottomLeftColor pc)
+		, colorChar (otherColor pc)
+		]
+
+instance FromJSON PillContent where
+	parseJSON v = do
+		[orient, bl, other] <- parseJSON v
+		pure PillContent
+			<*> parseOrientation err orient
+			<*> parseColor err bl
+			<*> parseColor err other
+		where
+		err :: Parser a
+		err = typeMismatch "PillContent" v
+
 instance Hashable Pill where
 	hashWithSalt s pill = s
 		`hashWithSalt` content pill
 		`hashWithSalt` bottomLeftPosition pill
+
+instance ToJSON Pill where toJSON pill = toJSON (content pill, bottomLeftPosition pill)
+instance FromJSON Pill where parseJSON v = uncurry Pill <$> parseJSON v
 
 bottomLeftShape :: Orientation -> Shape
 bottomLeftShape Horizontal = West
