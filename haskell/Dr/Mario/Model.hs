@@ -15,7 +15,7 @@ module Dr.Mario.Model
 	, Board
 	, emptyBoard, unsafeGenerateBoard
 	, width, height
-	, get, getColor, unsafeGet, ofoldMap, ofoldMapWithKey, unsafeMap
+	, get, getColor, unsafeGet, ofoldMap, ofoldMapWithKey, unsafeMap, countViruses
 	, move, rotate, rotateContent, place, garbage, clear
 	, randomBoard, unsafeRandomViruses, randomPillContents
 	, advanceRNG, decodeColor, decodePosition, pillContentTable
@@ -25,7 +25,7 @@ module Dr.Mario.Model
 	, thaw, mfreeze, munsafeFreeze
 	, memptyBoard
 	, mwidth, mheight
-	, mget, munsafeGet, mofoldMap, mofoldMapWithKey
+	, mget, munsafeGet, mofoldMap, mofoldMapWithKey, mcountViruses
 	, minfect, mplace, mgarbage, mclear
 	, mrandomBoard, munsafeRandomBoard, munsafeRandomViruses, mrandomPillContents
 	, mnewRNG, mrandomColor, mrandomPosition
@@ -954,6 +954,15 @@ ofoldMap f = foldMap (U.foldr ((<>) . f) mempty) . cells
 ofoldMapWithKey :: Monoid a => (Position -> Cell -> a) -> Board -> a
 ofoldMapWithKey f = V.ifoldr (\x -> flip (U.ifoldr (\y -> (<>) . f (Position x y)))) mempty . cells
 
+countVirusesInjection :: Cell -> Sum Int
+countVirusesInjection = \case
+	Occupied _ Virus -> 1
+	_ -> 0
+
+-- | Does what it sounds like it does.
+countViruses :: Board -> Int
+countViruses = getSum . ofoldMap countVirusesInjection
+
 -- | A monomorphic 'foldMap'-alike. No promises about what order the 'Cell's
 -- are visited in.
 mofoldMap :: (PrimMonad m, Monoid a) => (Cell -> a) -> MBoard (PrimState m) -> m a
@@ -970,6 +979,9 @@ mofoldMapWithKey f b = go (MU.length v - 1) where
 	v = mcells b
 	indexToPos i = Position { x = x_, y = y_ } where
 		(x_, y_) = i `quotRem` h
+
+mcountViruses :: PrimMonad m => MBoard (PrimState m) -> m Int
+mcountViruses = fmap getSum . mofoldMap countVirusesInjection
 
 -- | A monomorphic 'fmap'. It is unsafe because it does not perform clears or
 -- gravity after the map.
