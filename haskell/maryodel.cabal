@@ -23,7 +23,9 @@ library
                        DeriveFunctor,
                        FlexibleInstances,
                        TypeFamilies,
+                       LambdaCase,
                        MultiParamTypeClasses,
+                       PatternSynonyms,
                        ScopedTypeVariables,
                        TypeFamilies,
                        ViewPatterns

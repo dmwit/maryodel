@@ -41,6 +41,7 @@ import Data.Aeson.Types
 import Data.Bits hiding (rotate)
 import Data.Foldable (toList, for_)
 import Data.Hashable (Hashable, hashWithSalt, hashUsing)
+import Data.Ix
 import Data.Map (Map)
 import Data.Semigroup
 import Data.Monoid
@@ -67,7 +68,7 @@ shape :: Cell -> Maybe Shape
 shape (Occupied color shape) = Just shape
 shape Empty = Nothing
 
-data Orientation = Horizontal | Vertical deriving (Bounded, Enum, Eq, Ord, Read, Show)
+data Orientation = Horizontal | Vertical deriving (Bounded, Enum, Ix, Eq, Ord, Read, Show)
 -- | Uses the math convention: the bottom of a 'Board' is at 'y'=0, the top at some positive 'y'.
 data Position = Position { x, y :: !Int } deriving (Eq, Ord, Read, Show)
 data Direction = Direction { dx, dy :: !Int } deriving (Eq, Ord, Show)
