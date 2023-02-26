@@ -266,7 +266,12 @@ midSearch_ mss = do
 	    (good, bad) = partition (mliUnoccupied mri) mlis
 	(finalizePaths (mriY mri+1) bad ++) <$> case good of
 		[] -> pure []
-		_ -> traverse_ (expand mss') good >> midSearch_ mss'
+		_ -> do
+			-- inserting all of them before expanding any promotes
+			-- short-circuiting, and can lead to speedups of around 2x
+			traverse_ (mfcInsert (mssCache mss')) good
+			traverse_ (expand mss') good
+			midSearch_ mss'
 
 midInitialize :: (Bits a, Num a) => MBoard s -> Bool -> Int -> ST s (MidSearchState s a)
 midInitialize mb sensitive gravity = do
@@ -286,17 +291,19 @@ midInitialize mb sensitive gravity = do
 	    	, mssCache = cache
 	    	, mssBoard = mb
 	    	}
-	expand mss MidLeafInfo
-		{ mliPath = []
-		, mliPathLength = 0
-		, mliX = x
-		, mliExpX = bit x
-		, mliOrientation = startingOrientation
-		, mliFramesToForcedDrop = gravity-1
-		, mliForbiddenDirection = Nothing
-		, mliForbiddenCounterclockwise = False
-		, mliOrientable = False
-		}
+	    mli = MidLeafInfo
+	    	{ mliPath = []
+	    	, mliPathLength = 0
+	    	, mliX = x
+	    	, mliExpX = bit x
+	    	, mliOrientation = startingOrientation
+	    	, mliFramesToForcedDrop = gravity-1
+	    	, mliForbiddenDirection = Nothing
+	    	, mliForbiddenCounterclockwise = False
+	    	, mliOrientable = False
+	    	}
+	mfcInsert cache mli
+	expand mss mli
 	pure mss
 	where
 	w = mwidth mb
@@ -427,9 +434,7 @@ getOccupation mb y = go (mwidth mb-1) 0 where
 			_ -> 1
 
 expand :: (Bits a, Num a) => MidSearchState s a -> MidLeafInfo a -> ST s ()
-expand mss mli = mfcInsertThen mli (mssCache mss) $ do
-	expandLeft  mss mli
-	expandRight mss mli
+expand mss mli = expandLeft mss mli >> expandRight mss mli
 
 -- TODO: Is it possible that, while expanding left, we fail to insert because
 -- there's a better solution coming from a previous right expansion, but that
@@ -452,6 +457,9 @@ expandRight mss mli = when (mliFramesToForcedDrop mli > 0) $
 		for_ (tryStep (mssBoardEnv mss) (mssRowEnv mss) mli step) $ \mli' ->
 			mfcInsertThen mli' mfc (expandRight mss mli')
 	where mfc = mssCache mss
+
+mfcInsert :: MidFrontierCache s a -> MidLeafInfo a -> ST s ()
+mfcInsert mfc mli = modifySTArray mfc (mliX mli, mliOrientation mli) (mliInsert mli)
 
 mfcInsertThen :: MidLeafInfo a -> MidFrontierCache s a -> ST s () -> ST s ()
 mfcInsertThen mli mfc k = do
@@ -581,6 +589,9 @@ foldMapSTArray f arr = mconcat <$> traverse (fmap f . unsafeReadSTArray arr) [0.
 ifoldMapSTArray :: (Ix i, Monoid m) => (i -> a -> m) -> STArray s i a -> ST s m
 ifoldMapSTArray f arr = mconcat <$> zipWithM f' [0..] (range (boundsSTArray arr)) where
 	f' ix i = f i <$> unsafeReadSTArray arr ix
+
+modifySTArray :: Ix i => STArray s i a -> i -> (a -> a) -> ST s ()
+modifySTArray arr i f = readSTArray arr i >>= writeSTArray arr i . f
 
 -- | Like 'liftA2', but with a 'Control.Monad.join' at the end.
 liftJ2 :: Monad m => (a -> b -> m c) -> m a -> m b -> m c
