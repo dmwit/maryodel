@@ -1,11 +1,13 @@
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE PatternSynonyms #-}
+{-# LANGUAGE TypeApplications #-}
 
 module Dr.Mario.Pathfinding (
 	BoxMove(..),
 	unsafeApproxReachable,
 	munsafeApproxReachable,
 	smallerBox,
+	midSearch,
 	) where
 
 import Control.Applicative
@@ -21,6 +23,7 @@ import Data.Hashable
 import Data.HashMap.Strict (HashMap)
 import Data.List
 import Data.Maybe
+import Data.Word
 import GHC.Arr
 import Dr.Mario.Model
 import qualified Data.HashMap.Strict as HM
@@ -188,6 +191,21 @@ data MidStep
 	| MidStep (Maybe HDirection) (Maybe Rotation)
 	deriving (Eq, Ord, Read, Show)
 
+data MidPlacement = MidPlacement
+	{ mpBottomLeft :: !Position
+	, mpRotations :: !Int -- ^ 0-3, number of clockwise rotations from initial launch
+	} deriving (Eq, Ord, Read, Show)
+
+data MidPath = MidPath
+	{ mpSteps :: [MidStep]
+	, mpPathLength :: {-# UNPACK #-} !Int
+	} deriving (Eq, Ord, Read, Show)
+
+instance Hashable MidPlacement where
+	hashWithSalt s (MidPlacement bl rots) = s
+		`hashWithSalt` bl
+		`hashWithSalt` rots
+
 data MidBoardInfo = MidBoardInfo
 	{ mbiSensitive :: !Bool -- | Could we press down on the very first frame?
 	, mbiGravity :: !Int
@@ -235,24 +253,40 @@ data MidSearchState s a = MidSearchState
 	, mssBoard :: MBoard s
 	}
 
-midInitialize :: (Bits a, Num a) => MBoard s -> Bool -> Int -> ST s (MidSearchState s a, MidLeafInfo a)
+midSearch :: MBoard s -> Bool -> Int -> ST s (HashMap MidPlacement MidPath)
+midSearch mb sensitive gravity = HM.fromListWith shorterPath <$>
+	if mwidth mb <= 64
+	then midInitialize @Word64  mb sensitive gravity >>= midSearch_
+	else midInitialize @Integer mb sensitive gravity >>= midSearch_
+
+midSearch_ :: (Bits a, Num a) => MidSearchState s a -> ST s [(MidPlacement, MidPath)]
+midSearch_ mss = do
+	(mss', mlis) <- mssAdvanceRow mss
+	let mri = mssRowEnv mss'
+	    (good, bad) = partition (mliUnoccupied mri) mlis
+	(finalizePaths (mriY mri+1) bad ++) <$> case good of
+		[] -> pure []
+		_ -> traverse_ (expand mss') good >> midSearch_ mss'
+
+midInitialize :: (Bits a, Num a) => MBoard s -> Bool -> Int -> ST s (MidSearchState s a)
 midInitialize mb sensitive gravity = do
 	occupiedHere <- getOccupation mb y
 	cache <- newSTArray ((0, minBound), (xMax, maxBound)) []
-	pure (MidSearchState
-		{ mssBoardEnv = MidBoardInfo
-			{ mbiSensitive = sensitive
-			, mbiGravity = gravity
-			, mbiWidth = w
-			}
-		, mssRowEnv = MidRowInfo
-			{ mriOccupiedHere = occupiedHere
-			, mriOccupiedAbove = 0
-			, mriY = y
-			}
-		, mssCache = cache
-		, mssBoard = mb
-		}, MidLeafInfo
+	let mss = MidSearchState
+	    	{ mssBoardEnv = MidBoardInfo
+	    		{ mbiSensitive = sensitive
+	    		, mbiGravity = gravity
+	    		, mbiWidth = w
+	    		}
+	    	, mssRowEnv = MidRowInfo
+	    		{ mriOccupiedHere = occupiedHere
+	    		, mriOccupiedAbove = 0
+	    		, mriY = y
+	    		}
+	    	, mssCache = cache
+	    	, mssBoard = mb
+	    	}
+	expand mss MidLeafInfo
 		{ mliPath = []
 		, mliPathLength = 0
 		, mliX = x
@@ -262,12 +296,16 @@ midInitialize mb sensitive gravity = do
 		, mliForbiddenDirection = Nothing
 		, mliForbiddenCounterclockwise = False
 		, mliOrientable = False
-		})
+		}
+	pure mss
 	where
 	w = mwidth mb
 	xMax = w-1
 	x = xMax`quot`2
 	y = mheight mb-1
+
+shorterPath :: MidPath -> MidPath -> MidPath
+shorterPath mp mp' = if mpPathLength mp < mpPathLength mp' then mp else mp'
 
 pcompare :: MidLeafInfo a -> MidLeafInfo a -> POrdering
 pcompare mli mli' = mempty
@@ -348,6 +386,36 @@ mssAdvanceRow mss = do
 	where
 	xMax = mbiWidth (mssBoardEnv mss) - 1
 	y = mriY (mssRowEnv mss) - 1
+
+finalizePaths :: Int -> [MidLeafInfo a] -> [(MidPlacement, MidPath)]
+finalizePaths y = concatMap go where
+	go mli = (MidPlacement pos rots, MidPath path len)
+		: [(MidPlacement pos (rots+2), MidPath (reorient Horizontal path) len) | mliOrientable mli]
+		where
+		pos = Position (mliX mli) y
+		rots = case mliOrientation mli of Horizontal -> 0; Vertical -> 1
+		path = reverse (mliPath mli)
+		len = mliPathLength mli
+
+	reorient _ [] = []
+	reorient ation ms@(mh:mt) = case (ation, mh) of
+		(Vertical, Down) -> ms
+		(Vertical, MidStep _ Nothing) -> ms
+		(_, MidStep mdir (Just rot)) -> MidStep mdir (Just (otherRotation rot)):reorient (otherOrientation ation) mt
+		(_, _) -> mh:reorient ation mt
+
+	otherRotation Clockwise = Counterclockwise
+	otherRotation Counterclockwise = Clockwise
+	otherOrientation Horizontal = Vertical
+	otherOrientation Vertical = Horizontal
+
+mliUnoccupied :: (Bits a, Num a) => MidRowInfo a -> MidLeafInfo a -> Bool
+mliUnoccupied mri mli = mriY mri >= 0
+	&& mliExpX mli .&. occupiedMask == 0
+	where
+	occupiedMask = mriOccupiedHere mri .|. case mliOrientation mli of
+		Vertical -> mriOccupiedAbove mri
+		Horizontal -> shiftR (mriOccupiedHere mri) 1
 
 getOccupation :: (Bits a, Num a) => MBoard s -> Int -> ST s a
 getOccupation mb y = go (mwidth mb-1) 0 where
@@ -456,9 +524,9 @@ tryStep mbi mri mli0 step = extendPath <$> case step of
 
 -- It seems like there ought to be a pattern we could abuse here to not have to
 -- list these explicitly, but I can't see it. Some principles:
--- * When vertical, only rotate clockwise. When horizontal, only rotate
---   counterclockwise. This reduces the number of forbidden rotation situations,
---   and we'll fix up vertical and orientable placements later to swap rotations.
+-- * When vertical, only rotate counterclockwise. When horizontal, only rotate
+--   clockwise. This reduces the number of forbidden rotation situations, and
+--   we'll fix up vertical and orientable placements later to swap rotations.
 -- * When not orientable, favor becoming orientable (by rotating when
 --   horizontal and not rotating when vertical).
 -- * When orientable, favor not rotating (just for aesthetics -- it makes the
@@ -466,16 +534,16 @@ tryStep mbi mri mli0 step = extendPath <$> case step of
 -- * Favor moving fast to moving, and favor moving to staying still.
 leftMotions :: MidLeafInfo a -> [MidStep]
 leftMotions mli = case (mliOrientable mli, mliOrientation mli) of
-	(False, Horizontal) -> [Blink, leftCounter, leftOnly, counter, pass]
-	(False, Vertical  ) -> [leftOnly, leftClock, pass, clock]
-	(True , Horizontal) -> [Blink, leftCounter, leftOnly, counter, pass]
-	(True , Vertical  ) -> [leftClock, leftOnly, clock, pass]
+	(False, Horizontal) -> [Blink, leftClock, leftOnly, clock, pass]
+	(False, Vertical  ) -> [leftOnly, leftCounter, pass, counter]
+	(True , Horizontal) -> [Blink, leftOnly, leftClock, pass, clock]
+	(True , Vertical  ) -> [leftCounter, leftOnly, pass, counter]
 
 rightMotions :: MidLeafInfo a -> [MidStep]
 rightMotions mli = case (mliOrientable mli, mliOrientation mli) of
-	(False, Horizontal) -> [rightCounter, rightOnly, counter, pass]
+	(False, Horizontal) -> [rightClock, rightOnly, clock, pass]
 	(_, ation) -> [rightOnly, MidStep (Just R) rot, pass, MidStep Nothing rot]
-	where rot = Just $ case mliOrientation mli of Horizontal -> Counterclockwise; _ -> Clockwise
+	where rot = Just $ case mliOrientation mli of Horizontal -> Clockwise; _ -> Counterclockwise
 
 [pass, clock, counter, leftOnly, leftClock, leftCounter, rightOnly, rightClock, rightCounter] = liftA2 MidStep
 	[Nothing, Just L, Just R]
@@ -597,7 +665,9 @@ ppMidBoardInfo mbi = ""
 	++ "←" ++ show (mbiWidth mbi) ++ "→ "
 	++ "↓₀" ++ ppBool (mbiSensitive mbi) ++ " "
 	++ pad 2 (show (mbiGravity mbi)) ++ "/↓"
-	where pad n s = replicate (n-length s) ' ' ++ s
+
+pad :: Int -> String -> String
+pad n s = replicate (n-length s) ' ' ++ s
 
 ppMidSearchState :: (Bits a, Num a, Show a) => MidSearchState s a -> String
 ppMidSearchState mss = ""
@@ -612,3 +682,18 @@ ppMidSearchStateST mss = do
 		++ pp b
 		++ ppMidSearchState mss
 		++ unlines fcLines
+
+ppMidPlacement :: MidPlacement -> String
+ppMidPlacement mp = "(" ++ show (x (mpBottomLeft mp)) ++ ", " ++ pad 2 (show (y (mpBottomLeft mp))) ++ ") " ++ replicate (mpRotations mp) '↻' ++ replicate (4-mpRotations mp) ' '
+
+ppMidPath :: MidPath -> String
+ppMidPath = ppMidSteps . mpSteps
+
+ppMidResult :: (MidPlacement, MidPath) -> String
+ppMidResult (placement, path) = ppMidPlacement placement ++ ": " ++ ppMidPath path
+
+ppMidResults :: HashMap MidPlacement MidPath -> String
+ppMidResults = ppList ppMidResult . sort . HM.toList
+
+ppMidResultsLn :: HashMap MidPlacement MidPath -> String
+ppMidResultsLn = unlines . map ppMidResult . sort . HM.toList
