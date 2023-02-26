@@ -7,7 +7,12 @@ module Dr.Mario.Pathfinding (
 	unsafeApproxReachable,
 	munsafeApproxReachable,
 	smallerBox,
-	midSearch,
+	MidPlacement(..),
+	MidPath(..),
+	MidStep(..),
+	HDirection(..),
+	mapproxReachable,
+	shorterPath,
 	) where
 
 import Control.Applicative
@@ -253,14 +258,23 @@ data MidSearchState s a = MidSearchState
 	, mssBoard :: MBoard s
 	}
 
-midSearch :: MBoard s -> Bool -> Int -> ST s (HashMap MidPlacement MidPath)
-midSearch mb sensitive gravity = HM.fromListWith shorterPath <$>
+-- TODO: memoize blank rows for 8x16 boards and some sensible range of gravities
+-- | Find lots of reachable positions. There should be no false positives, i.e.
+-- all the paths returned will actually be realizable under the given
+-- conditions. However, it may be possible to arrive at some positions a few
+-- frames faster with particularly sneaky tricks, and there may be a few
+-- reachable placements this does not find.
+--
+-- Arguments are the board, whether the game is watching for a down press on
+-- the first frame of movement, and the current gravity (in frames per row).
+mapproxReachable :: PrimMonad m => MBoard (PrimState m) -> Bool -> Int -> m (HashMap MidPlacement MidPath)
+mapproxReachable mb sensitive gravity = stToPrim $ HM.fromListWith shorterPath <$>
 	if mwidth mb <= 64
-	then midInitialize @Word64  mb sensitive gravity >>= midSearch_
-	else midInitialize @Integer mb sensitive gravity >>= midSearch_
+	then midInitialize @Word64  mb sensitive gravity >>= midSearch
+	else midInitialize @Integer mb sensitive gravity >>= midSearch
 
-midSearch_ :: (Bits a, Num a) => MidSearchState s a -> ST s [(MidPlacement, MidPath)]
-midSearch_ mss = do
+midSearch :: (Bits a, Num a) => MidSearchState s a -> ST s [(MidPlacement, MidPath)]
+midSearch mss = do
 	(mss', mlis) <- mssAdvanceRow mss
 	let mri = mssRowEnv mss'
 	    (good, bad) = partition (mliUnoccupied mri) mlis
@@ -271,7 +285,7 @@ midSearch_ mss = do
 			-- short-circuiting, and can lead to speedups of around 2x
 			traverse_ (mfcInsert (mssCache mss')) good
 			traverse_ (expand mss') good
-			midSearch_ mss'
+			midSearch mss'
 
 midInitialize :: (Bits a, Num a) => MBoard s -> Bool -> Int -> ST s (MidSearchState s a)
 midInitialize mb sensitive gravity = do
