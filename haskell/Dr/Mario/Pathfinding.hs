@@ -541,7 +541,7 @@ mliUnoccupied mri mli = mriY mri >= 0
 
 getOccupation :: (Bits a, Num a) => MBoard s -> Int -> ST s a
 getOccupation mb y = go (mwidth mb-1) 0 where
-	go 0 occ = pure occ
+	go (-1) occ = pure occ
 	go x occ = do
 		cell <- munsafeGet mb (Position x y)
 		go (x-1) $ shiftL occ 1 .|. case cell of
