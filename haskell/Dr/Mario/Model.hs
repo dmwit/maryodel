@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
@@ -5,12 +6,13 @@ module Dr.Mario.Model
 	( Color(..)
 	, Shape(..)
 	, Cell(..), color, shape
-	, Orientation(..), bottomLeftShape, otherShape
+	, Orientation(..), bottomLeftShape, otherShape, perpendicular
 	, Position(..)
 	, Direction, left, right, down, unsafeMove
-	, Rotation(..)
+	, Rotation(..), chiral
 	, PillContent(..), bottomLeftCell, otherCell
 	, Pill(..), otherPosition
+	, CoarseSpeed(..), gravityTable, gravityIndex, gravity
 	, CleanupResults(..)
 	, Board
 	, emptyBoard, unsafeGenerateBoard
@@ -48,6 +50,7 @@ import Data.Monoid
 import Data.Primitive.MutVar
 import Data.Set (Set)
 import Data.Word
+import GHC.Generics
 import qualified Data.List                   as L
 import qualified Data.Map.Strict             as M
 import qualified Data.Set                    as S
@@ -68,11 +71,9 @@ shape :: Cell -> Maybe Shape
 shape (Occupied color shape) = Just shape
 shape Empty = Nothing
 
-data Orientation = Horizontal | Vertical deriving (Bounded, Enum, Ix, Eq, Ord, Read, Show)
 -- | Uses the math convention: the bottom of a 'Board' is at 'y'=0, the top at some positive 'y'.
 data Position = Position { x, y :: !Int } deriving (Eq, Ord, Read, Show)
 data Direction = Direction { dx, dy :: !Int } deriving (Eq, Ord, Show)
-data Rotation = Clockwise | Counterclockwise deriving (Bounded, Enum, Eq, Ord, Read, Show)
 data PillContent = PillContent
 	{ orientation :: !Orientation
 	, bottomLeftColor, otherColor :: !Color
@@ -81,42 +82,7 @@ data Pill = Pill
 	{ content :: !PillContent
 	, bottomLeftPosition :: !Position
 	} deriving (Eq, Ord, Read, Show)
-
-instance Hashable Orientation where hashWithSalt = hashUsing fromEnum
-instance Hashable Rotation    where hashWithSalt = hashUsing fromEnum
-
-orientationChar :: Orientation -> Char
-orientationChar = \case
-	Horizontal -> '↔'
-	Vertical -> '↕'
-
-rotationChar :: Rotation -> Char
-rotationChar = \case
-	Clockwise -> '↻'
-	Counterclockwise -> '↺'
-
-instance ToJSON   Orientation where toJSON = toJSON . orientationChar
-instance ToJSON   Rotation    where toJSON = toJSON . rotationChar
-
-parseOrientation :: Parser Orientation -> Char -> Parser Orientation
-parseOrientation err = \case
-	'↔' -> pure Horizontal
-	'↕' -> pure Vertical
-	_ -> err
-
-instance FromJSON Orientation where
-	parseJSON v = parseJSON v >>= parseOrientation err where
-		err = typeMismatch "Orientation (\"↔\" or \"↕\")" v
-
-parseRotation :: Parser Rotation -> Char -> Parser Rotation
-parseRotation err = \case
-	'↻' -> pure Clockwise
-	'↺' -> pure Counterclockwise
-	_ -> err
-
-instance FromJSON Rotation where
-	parseJSON v = parseJSON v >>= parseRotation err where
-		err = typeMismatch "Rotation (\"↻\" or \"↺\")" v
+data CoarseSpeed = Low | Med | Hi | Ult deriving (Bounded, Enum, Eq, Ord, Read, Show, Generic)
 
 instance Hashable Position where
 	hashWithSalt s pos = s
@@ -163,6 +129,9 @@ instance Hashable Pill where
 instance ToJSON Pill where toJSON pill = toJSON (content pill, bottomLeftPosition pill)
 instance FromJSON Pill where parseJSON v = uncurry Pill <$> parseJSON v
 
+instance ToJSON CoarseSpeed
+instance FromJSON CoarseSpeed
+
 bottomLeftShape :: Orientation -> Shape
 bottomLeftShape Horizontal = West
 bottomLeftShape Vertical = South
@@ -188,11 +157,35 @@ perpendicular :: Orientation -> Orientation
 perpendicular Horizontal = Vertical
 perpendicular Vertical   = Horizontal
 
+chiral :: Rotation -> Rotation
+chiral Clockwise = Counterclockwise
+chiral Counterclockwise = Clockwise
+
 left, right, up, down :: Direction
 left  = Direction (-1)  0
 right = Direction   1   0
 up    = Direction   0   1
 down  = Direction   0 (-1)
+
+-- | For NTSC NES Dr. Mario.
+gravityTable :: U.Vector Int
+gravityTable = U.fromList [70, 68, 66, 64, 62, 60, 58, 56, 54, 52, 50, 48, 46, 44, 42, 40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 10, 9, 9, 8, 8, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1]
+
+-- | The starting index into 'gravityTable' used by NES Dr. Mario.
+gravityIndex :: CoarseSpeed -> Int
+gravityIndex = \case
+	Low -> 15
+	Med -> 25
+	Hi  -> 31
+	Ult -> 35
+
+-- | Compute the gravity (in frames per row) the same way NES Dr. Mario does.
+-- The @Int@ argument is how many pills have already been locked since the
+-- level started. Probably doesn't do anything sane with negative inputs, but
+-- at least it won't crash.
+gravity :: CoarseSpeed -> Int -> Int
+gravity speed pills = gravityTable `U.unsafeIndex` (max 0 . min 80) (gravityIndex speed + pillPenalty) where
+	pillPenalty = min 49 $ (pills+2) `quot` 10
 
 width :: Board -> Int
 width = V.length . cells

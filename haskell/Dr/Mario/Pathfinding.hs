@@ -7,7 +7,7 @@ module Dr.Mario.Pathfinding (
 	unsafeApproxReachable,
 	munsafeApproxReachable,
 	smallerBox,
-	MidPlacement(..),
+	MidPlacement(..), mpPill,
 	MidPath(..),
 	MidStep(..),
 	HDirection(..),
@@ -21,9 +21,11 @@ import Control.Monad.Loops
 import Control.Monad.Primitive
 import Control.Monad.ST
 import Data.Aeson
+import Data.Aeson.Types
 import Data.Bits
 import Data.Foldable
 import Data.Function
+import Data.Functor
 import Data.Hashable
 import Data.HashMap.Strict (HashMap)
 import Data.List
@@ -31,6 +33,7 @@ import Data.Maybe
 import Data.Word
 import GHC.Arr
 import Dr.Mario.Model
+import Dr.Mario.Model.Internal
 import qualified Data.HashMap.Strict as HM
 
 -- | A simplified concept of what paths pills can take, named after the shape
@@ -196,20 +199,15 @@ data MidStep
 	| MidStep (Maybe HDirection) (Maybe Rotation)
 	deriving (Eq, Ord, Read, Show)
 
-data MidPlacement = MidPlacement
-	{ mpBottomLeft :: !Position
-	, mpRotations :: !Int -- ^ 0-3, number of clockwise rotations from initial launch
-	} deriving (Eq, Ord, Read, Show)
-
 data MidPath = MidPath
 	{ mpSteps :: [MidStep]
 	, mpPathLength :: {-# UNPACK #-} !Int
 	} deriving (Eq, Ord, Read, Show)
 
-instance Hashable MidPlacement where
-	hashWithSalt s (MidPlacement bl rots) = s
-		`hashWithSalt` bl
-		`hashWithSalt` rots
+data MidPlacement = MidPlacement
+	{ mpBottomLeft :: !Position
+	, mpRotations :: !Int -- ^ 0-3, number of clockwise rotations from initial launch
+	} deriving (Eq, Ord, Read, Show)
 
 data MidBoardInfo = MidBoardInfo
 	{ mbiSensitive :: !Bool -- | Could we press down on the very first frame?
@@ -257,6 +255,102 @@ data MidSearchState s a = MidSearchState
 	, mssCache :: MidFrontierCache s a
 	, mssBoard :: MBoard s
 	}
+
+instance Hashable HDirection where hashWithSalt = hashUsing fromEnum
+instance Hashable MidStep where
+	hashWithSalt s = \case
+		Blink -> hashWithSalt s LT
+		Down -> hashWithSalt s EQ
+		MidStep mdir mrot -> s
+			`hashWithSalt` GT
+			`hashWithSalt` mdir
+			`hashWithSalt` mrot
+
+instance Hashable MidPath where
+	-- it should be an invariant that if mpSteps a == mpSteps b, then
+	-- mpPathLength a == mpPathLength b
+	hashWithSalt s = foldl' hashWithSalt s . mpSteps
+
+instance Hashable MidPlacement where
+	hashWithSalt s (MidPlacement bl rots) = s
+		`hashWithSalt` bl
+		`hashWithSalt` rots
+
+hdirectionChar :: HDirection -> Char
+hdirectionChar L = '←'
+hdirectionChar R = '→'
+
+parseHDirection :: Parser HDirection -> Char -> Parser HDirection
+parseHDirection err = \case
+	'←' -> pure L
+	'→' -> pure R
+	_ -> err
+
+instance ToJSON HDirection where
+	toJSON = toJSON . hdirectionChar
+	toJSONList = toJSON . map hdirectionChar
+	toEncoding = toEncoding . hdirectionChar
+	toEncodingList = toEncoding . map hdirectionChar
+
+instance FromJSON HDirection where
+	parseJSON v = parseJSON v >>= parseHDirection err where
+		err = typeMismatch "HDirection (\"←\" or \"→\")" v
+	parseJSONList v = parseJSON v >>= traverse (parseHDirection err) where
+		err = typeMismatch "[HDirection] (string with only '←' and '→' in it)" v
+
+parseMidStep :: String -> Maybe (MidStep, String)
+parseMidStep = \case
+	'(':'←':'↻':'↺':')':s -> Just (Blink, s)
+	'↓':s -> Just (Down, s)
+	'-':s -> Just (pass, s)
+	'(':dir:rot:')':s -> liftA2 MidStep (tryDir dir) (tryRot rot) <&> \ms -> (ms, s)
+	c:s -> (tryDir c <&> \mdir -> (MidStep mdir Nothing, s))
+	   <|> (tryRot c <&> \mrot -> (MidStep Nothing mrot, s))
+	where
+	tryDir = \case
+		'←' -> Just (Just L)
+		'→' -> Just (Just R)
+		_ -> Nothing
+	tryRot = \case
+		'↻' -> Just (Just Clockwise)
+		'↺' -> Just (Just Counterclockwise)
+		_ -> Nothing
+
+instance ToJSON MidStep where
+	toJSON = toJSON . ppMidStep
+	toJSONList = toJSON . concatMap ppMidStep
+	toEncoding = toEncoding . ppMidStep
+	toEncodingList = toEncoding . concatMap ppMidStep
+
+instance FromJSON MidStep where
+	parseJSON v = parseJSON v >>= \s -> case parseMidStep s of
+		Just (ms, "") -> pure ms
+		_ -> typeMismatch "MidStep" v
+	parseJSONList v = parseJSON v >>= go where
+		go [] = pure []
+		go s = case parseMidStep s of
+			Just (ms, s') -> (ms:) <$> go s'
+			Nothing -> typeMismatch "[MidStep]" v
+
+instance ToJSON MidPath where
+	toJSON = toJSON . mpSteps
+	toEncoding = toEncoding . mpSteps
+
+instance FromJSON MidPath where
+	parseJSON v = parseJSON v <&> \path -> MidPath path (length path)
+
+midPlacementToTuple :: MidPlacement -> (Position, Int)
+midPlacementToTuple mp = (mpBottomLeft mp, mpRotations mp)
+
+midPlacementFromTuple :: (Position, Int) -> MidPlacement
+midPlacementFromTuple = uncurry MidPlacement
+
+instance ToJSON MidPlacement where
+	toJSON = toJSON . midPlacementToTuple
+	toEncoding = toEncoding . midPlacementToTuple
+
+instance FromJSON MidPlacement where
+	parseJSON v = midPlacementFromTuple <$> parseJSON v
 
 -- TODO: memoize blank rows for 8x16 boards and some sensible range of gravities
 -- | Find lots of reachable positions. There should be no false positives, i.e.
@@ -327,6 +421,18 @@ midInitialize mb sensitive gravity = do
 
 shorterPath :: MidPath -> MidPath -> MidPath
 shorterPath mp mp' = if mpPathLength mp < mpPathLength mp' then mp else mp'
+
+mpPill :: MidPlacement -> Color -> Color -> Pill
+mpPill mp l r = Pill
+	{ bottomLeftPosition = mpBottomLeft mp
+	, content = PillContent
+		{ orientation = toEnum (rots .&. 1)
+		, bottomLeftColor = if flipped then r else l
+		, otherColor = if flipped then l else r
+		}
+	} where
+	rots = mpRotations mp .&. 3
+	flipped = rots == 1 || rots == 2
 
 pcompare :: MidLeafInfo a -> MidLeafInfo a -> POrdering
 pcompare mli mli' = mempty
@@ -422,13 +528,8 @@ finalizePaths y = concatMap go where
 	reorient ation ms@(mh:mt) = case (ation, mh) of
 		(Vertical, Down) -> ms
 		(Vertical, MidStep _ Nothing) -> ms
-		(_, MidStep mdir (Just rot)) -> MidStep mdir (Just (otherRotation rot)):reorient (otherOrientation ation) mt
+		(_, MidStep mdir (Just rot)) -> MidStep mdir (Just (chiral rot)):reorient (perpendicular ation) mt
 		(_, _) -> mh:reorient ation mt
-
-	otherRotation Clockwise = Counterclockwise
-	otherRotation Counterclockwise = Clockwise
-	otherOrientation Horizontal = Vertical
-	otherOrientation Vertical = Horizontal
 
 mliUnoccupied :: (Bits a, Num a) => MidRowInfo a -> MidLeafInfo a -> Bool
 mliUnoccupied mri mli = mriY mri >= 0
@@ -616,13 +717,13 @@ liftJ2 f ma mb = do
 
 -- debugging only
 ppHDirection :: HDirection -> String
-ppHDirection = \case L -> "←"; R -> "→"
+ppHDirection = pure . hdirectionChar
 
 ppRotation :: Rotation -> String
-ppRotation = \case Clockwise -> "↻"; Counterclockwise -> "↺"
+ppRotation = pure . rotationChar
 
 ppOrientation :: Orientation -> String
-ppOrientation = \case Horizontal -> "↔"; Vertical -> "↕"
+ppOrientation = pure . orientationChar
 
 ppBool :: Bool -> String
 ppBool = \case True -> "✓"; False -> "✗"

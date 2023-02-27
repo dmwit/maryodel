@@ -8,6 +8,8 @@
 module Dr.Mario.Model.Internal
 	( Color(..), colorChar, parseColor
 	, Shape(..), shapeChar, parseShape
+	, Orientation(..), orientationChar, parseOrientation
+	, Rotation(..), rotationChar, parseRotation
 	, Cell(..)
 	, Board(..)
 	, emptyBoard
@@ -21,6 +23,7 @@ import Data.Bits
 import Data.Default
 import Data.Foldable
 import Data.Hashable (Hashable, hashWithSalt, hashUsing)
+import Data.Ix
 import Data.Primitive.ByteArray (setByteArray)
 import Data.Word
 import qualified Data.Aeson.Encoding              as E
@@ -37,8 +40,13 @@ data Color = Red | Yellow | Blue deriving (Bounded, Enum, Eq, Ord, Read, Show)
 -- vertical pill has a 'North' shape above a 'South' shape.
 data Shape = Virus | Disconnected | North | South | East | West deriving (Bounded, Enum, Eq, Ord, Read, Show)
 data Cell = Empty | Occupied !Color !Shape deriving (Eq, Ord, Read, Show)
+data Orientation = Horizontal | Vertical deriving (Bounded, Enum, Ix, Eq, Ord, Read, Show)
+data Rotation = Clockwise | Counterclockwise deriving (Bounded, Enum, Eq, Ord, Read, Show)
 
-instance Hashable Color where hashWithSalt = hashUsing fromEnum
+instance Hashable Color       where hashWithSalt = hashUsing fromEnum
+instance Hashable Shape       where hashWithSalt = hashUsing fromEnum
+instance Hashable Orientation where hashWithSalt = hashUsing fromEnum
+instance Hashable Rotation    where hashWithSalt = hashUsing fromEnum
 
 {-# INLINE decodeCell #-}
 decodeCell :: Word8 -> Cell
@@ -102,6 +110,52 @@ instance DVG.Vector U.Vector Cell where
 	basicUnsafeSlice i j (VCell v) = VCell (DVG.basicUnsafeSlice i j v)
 	{-# INLINE basicUnsafeIndexM #-}
 	basicUnsafeIndexM (VCell v) i = decodeCell <$> DVG.basicUnsafeIndexM v i
+
+orientationChar :: Orientation -> Char
+orientationChar = \case
+	Horizontal -> '↔'
+	Vertical -> '↕'
+
+parseOrientation :: Parser Orientation -> Char -> Parser Orientation
+parseOrientation err = \case
+	'↔' -> pure Horizontal
+	'↕' -> pure Vertical
+	_ -> err
+
+instance ToJSON Orientation where
+	toJSON = toJSON . orientationChar
+	toEncoding = toEncoding . orientationChar
+	toJSONList = toJSON . map orientationChar
+	toEncodingList = toEncoding . map orientationChar
+
+instance FromJSON Orientation where
+	parseJSON v = parseJSON v >>= parseOrientation err where
+		err = typeMismatch "Orientation (\"↔\" or \"↕\")" v
+	parseJSONList v = parseJSON v >>= traverse (parseOrientation err) where
+		err = typeMismatch "[Orientation] (string with only '↔' and '↕' in it)" v
+
+rotationChar :: Rotation -> Char
+rotationChar = \case
+	Clockwise -> '↻'
+	Counterclockwise -> '↺'
+
+parseRotation :: Parser Rotation -> Char -> Parser Rotation
+parseRotation err = \case
+	'↻' -> pure Clockwise
+	'↺' -> pure Counterclockwise
+	_ -> err
+
+instance ToJSON Rotation where
+	toJSON = toJSON . rotationChar
+	toEncoding = toEncoding . rotationChar
+	toJSONList = toJSON . map rotationChar
+	toEncodingList = toEncoding . map rotationChar
+
+instance FromJSON Rotation where
+	parseJSON v = parseJSON v >>= parseRotation err where
+		err = typeMismatch "Rotation (\"↻\" or \"↺\")" v
+	parseJSONList v = parseJSON v >>= traverse (parseRotation err) where
+		err = typeMismatch "[Rotation] (string with only '↻' and '↺' in it)" v
 
 colorChar :: Color -> Char
 colorChar = \case

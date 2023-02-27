@@ -21,6 +21,7 @@ library
                        Dr.Mario.Util
   other-extensions:    BinaryLiterals,
                        DeriveFunctor,
+                       DeriveGeneric,
                        FlexibleInstances,
                        TypeFamilies,
                        LambdaCase,
