@@ -1,11 +1,13 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 module Dr.Mario.Model
 	( Color(..)
 	, Shape(..)
-	, Cell(..), color, shape
+	, Cell(..), toOCell, color, shape
+	, OCell(..), toCell
 	, Orientation(..), bottomLeftShape, otherShape, perpendicular
 	, Position(..)
 	, Direction, left, right, down, unsafeMove
@@ -14,11 +16,13 @@ module Dr.Mario.Model
 	, Pill(..), otherPosition
 	, CoarseSpeed(..), gravityTable, gravityIndex, gravity
 	, CleanupResults(..)
+	, DropResults(..), summarizeDropResults
+	, ClearResults(..), summarizeClearResults
 	, Board
 	, emptyBoard, unsafeGenerateBoard
 	, width, height
 	, get, getColor, unsafeGet, ofoldMap, ofoldMapWithKey, unsafeMap, countViruses
-	, move, rotate, rotateContent, place, garbage, clear
+	, move, rotate, rotateContent, place, placeDetails, garbage, clear
 	, randomBoard, unsafeRandomViruses, randomPillContents
 	, advanceRNG, decodeColor, decodePosition, pillContentTable
 	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill
@@ -28,7 +32,7 @@ module Dr.Mario.Model
 	, memptyBoard
 	, mwidth, mheight
 	, mget, munsafeGet, mofoldMap, mofoldMapWithKey, mcountViruses
-	, minfect, mplace, mgarbage, mclear
+	, minfect, mplace, mplaceDetails, mgarbage, mclear
 	, mrandomBoard, munsafeRandomBoard, munsafeRandomViruses, mrandomPillContents
 	, mnewRNG, mrandomColor, mrandomPosition
 	) where
@@ -40,8 +44,9 @@ import Control.Monad.ST
 import Control.Monad.Trans.Writer.CPS
 import Data.Aeson
 import Data.Aeson.Types
+import Data.Bifunctor
 import Data.Bits hiding (rotate)
-import Data.Foldable (toList, for_)
+import Data.Foldable (toList, foldMap', for_)
 import Data.Hashable (Hashable, hashWithSalt, hashUsing)
 import Data.Ix
 import Data.Map (Map)
@@ -63,14 +68,6 @@ import qualified System.Console.ANSI         as ANSI
 import Dr.Mario.Model.Internal
 import Dr.Mario.Util
 
-color :: Cell -> Maybe Color
-color (Occupied color shape) = Just color
-color Empty = Nothing
-
-shape :: Cell -> Maybe Shape
-shape (Occupied color shape) = Just shape
-shape Empty = Nothing
-
 -- | Uses the math convention: the bottom of a 'Board' is at 'y'=0, the top at some positive 'y'.
 data Position = Position { x, y :: !Int } deriving (Eq, Ord, Read, Show)
 data Direction = Direction { dx, dy :: !Int } deriving (Eq, Ord, Show)
@@ -83,6 +80,12 @@ data Pill = Pill
 	, bottomLeftPosition :: !Position
 	} deriving (Eq, Ord, Read, Show)
 data CoarseSpeed = Low | Med | Hi | Ult deriving (Bounded, Enum, Eq, Ord, Read, Show, Generic)
+
+-- | The O is for occupied.
+data OCell = OCell
+	{ ocolor :: !Color
+	, oshape :: !Shape
+	} deriving (Eq, Ord, Read, Show)
 
 instance Hashable Position where
 	hashWithSalt s pos = s
@@ -131,6 +134,51 @@ instance FromJSON Pill where parseJSON v = uncurry Pill <$> parseJSON v
 
 instance ToJSON CoarseSpeed
 instance FromJSON CoarseSpeed
+
+instance Hashable OCell where
+	hashWithSalt s oc = s
+		`hashWithSalt` ocolor oc
+		`hashWithSalt` oshape oc
+
+ocellShowS :: OCell -> String -> String
+ocellShowS (OCell c s) rest = colorChar c : shapeChar s : rest
+
+parseOCell :: (forall a. Parser a) -> Char -> Char -> Parser OCell
+parseOCell err c s = pure OCell <*> parseColor err c <*> parseShape err s
+
+instance ToJSON OCell where
+	toJSON = toJSON . flip ocellShowS ""
+	toEncoding = toEncoding . flip ocellShowS ""
+	toJSONList = toJSON . foldr ocellShowS ""
+	toEncodingList = toEncoding . foldr ocellShowS ""
+
+instance FromJSON OCell where
+	parseJSON v = parseJSON v >>= \case
+		[c, s] -> parseOCell err c s
+		_ -> err
+		where
+		err :: Parser a
+		err = typeMismatch "OCell (color character followed by shape character)" v
+	parseJSONList v = parseJSON v >>= go where
+		go (c:s:rest) = pure (:) <*> parseOCell err c s <*> go rest
+		go [] = pure []
+		go _ = err
+
+		err :: Parser a
+		err = typeMismatch "[OCell] (string of alternating colors and shapes)" v
+
+toOCell :: Cell -> Maybe OCell
+toOCell Empty = Nothing
+toOCell (Occupied c s) = Just (OCell c s)
+
+toCell :: OCell -> Cell
+toCell (OCell c s) = Occupied c s
+
+color :: Cell -> Maybe Color
+color = fmap ocolor . toOCell
+
+shape :: Cell -> Maybe Shape
+shape = fmap oshape . toOCell
 
 bottomLeftShape :: Orientation -> Shape
 bottomLeftShape Horizontal = West
@@ -292,6 +340,12 @@ rotate board pill rot = case orientation (content pill) of
 	kicked   = pill { bottomLeftPosition = unsafeMove left (bottomLeftPosition pill) }
 	kickedAndRotated = Just (unsafeRotate kicked rot)
 
+-- TODO: make a specialized version that does less allocation of intermediate
+-- data structures
+-- | Like 'placeDetails', but with less detail about what all happened.
+place :: Board -> Pill -> Maybe (CleanupResults, Board)
+place board pill = first summarizeClearResults <$> placeDetails board pill
+
 -- | Overwrite the cells under a 'Pill', then repeatedly clear four-in-a-rows
 -- and drop unsupported pieces. N.B. nothing will drop if nothing clears, so it
 -- is the caller's responsibility to ensure that the pill would be supported
@@ -299,10 +353,10 @@ rotate board pill rot = case orientation (content pill) of
 --
 -- Returns 'Nothing' if the 'Pill' is out of bounds or over a non-'Empty' cell.
 -- Otherwise returns the new 'Board' and a summary of what all happened.
-place :: Board -> Pill -> Maybe (CleanupResults, Board)
-place board pill = case (placementValid, fastPathValid) of
+placeDetails :: Board -> Pill -> Maybe (ClearResults, Board)
+placeDetails board pill = case (placementValid, fastPathValid) of
 	(False, _) -> Nothing
-	(_, True ) -> Just (mempty, fastPath)
+	(_, True ) -> Just (NoClear, fastPath)
 	(_, False) -> Just slowPath
 	where
 	pos1@(Position x1 y1) = bottomLeftPosition pill
@@ -322,7 +376,7 @@ place board pill = case (placementValid, fastPathValid) of
 		&& (y2 >= height board || unsafeGet board pos2 == Empty)
 
 	-- We don't need to check y2 >= 0 because:
-	-- * we only use y2Valid if case placementValid is True
+	-- * we only use y2Valid if placementValid is True
 	-- * if placementValid is True, then y1 >= 0
 	-- * y2 >= y1
 	y2Valid :: Bool
@@ -466,6 +520,12 @@ munsafeModify mb p f = do
 minfect :: PrimMonad m => MBoard (PrimState m) -> Position -> Color -> m ()
 minfect mb p col = mset mb p (Occupied col Virus)
 
+-- TODO: make a specialized version that does less allocation of intermediate
+-- data structures
+-- | Like 'mplaceDetails', but with less detail about what all happened.
+mplace :: forall m. PrimMonad m => MBoard (PrimState m) -> Pill -> m (Maybe CleanupResults)
+mplace mb pill = fmap summarizeClearResults <$> mplaceDetails mb pill
+
 -- | Overwrite the cells under a 'Pill', then repeatedly clear four-in-a-rows
 -- and drop unsupported pieces. N.B. nothing will drop if nothing clears, so it
 -- is the caller's responsibility to ensure that the pill would be supported
@@ -473,8 +533,8 @@ minfect mb p col = mset mb p (Occupied col Virus)
 --
 -- Returns 'Nothing' (and does nothing else) if the 'Pill' is out of bounds or
 -- over a non-'Empty' cell.
-mplace :: forall m. PrimMonad m => MBoard (PrimState m) -> Pill -> m (Maybe CleanupResults)
-mplace mb pill = do
+mplaceDetails :: forall m. PrimMonad m => MBoard (PrimState m) -> Pill -> m (Maybe ClearResults)
+mplaceDetails mb pill = do
 	valid <- placementValid
 	if valid
 		then Just <$> munsafePlace mb pos1 pos2 (content pill)
@@ -498,7 +558,7 @@ mplace mb pill = do
 		       else return True
 
 -- | Doesn't check that the positions are sensible.
-munsafePlace :: PrimMonad m => MBoard (PrimState m) -> Position -> Position -> PillContent -> m CleanupResults
+munsafePlace :: PrimMonad m => MBoard (PrimState m) -> Position -> Position -> PillContent -> m ClearResults
 munsafePlace mb pos1 pos2 pc = do
 	ps <- case orientation pc of
 		Horizontal -> do
@@ -532,16 +592,17 @@ unsafeGarbageInBounds w pieces = x >= 0 && x' < w where
 
 -- TODO: doesn't this handle overwriting half of a horizontal pill incorrectly?
 -- | Doesn't check that the columns are in-bounds.
-munsafeGarbage :: PrimMonad m => MBoard (PrimState m) -> Map Int Color -> m CleanupResults
+munsafeGarbage :: PrimMonad m => MBoard (PrimState m) -> Map Int Color -> m DropResults
 munsafeGarbage mb pieces = M.traverseWithKey go pieces >>= unsafeDropAndClear mb
 	where
 	y = mheight mb - 1
 	go x col = p <$ munsafeSet mb p (Occupied col Disconnected) where
 		p = Position x y
 
+-- TODO: who uses this? this doesn't disconnect pill halves, which seems weird
 -- | Set the given positions to 'Empty', then apply gravity and clear
 -- four-in-a-rows.
-mclear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m CleanupResults
+mclear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m DropResults
 mclear mb ps = do
 	for_ ps $ \p -> mset mb p Empty
 	unsafeDropAndClear mb
@@ -551,42 +612,51 @@ mclear mb ps = do
 		, x p >= 0 && x p < mwidth mb && y p >= 0 && y' < mheight mb
 		]
 
-unzip4 :: [(a,b,c,d)] -> ([a],[b],[c],[d])
-unzip4 [] = ([],[],[],[])
-unzip4 ((a,b,c,d):abcds) = let (as,bs,cs,ds) = unzip4 abcds in (a:as,b:bs,c:cs,d:ds)
+-- | Functions in this module will only produce non-empty 'Map's.
+data ClearResults = Clear (Map Position OCell) DropResults | NoClear deriving (Eq, Ord, Read, Show)
+
+-- | Functions in this module will only produce non-empty 'Map's. However, they
+-- may produce length-0 drops. In particular, when only half of a pill is
+-- involved in a clear, there will be a length-0 drop of a 'Disconnected' cell
+-- for the half that didn't clear. (We make a half-hearted attempt to avoid
+-- reporting other 0-length drops, but do not guarantee full success.)
+data DropResults = Drop (Map Position (Int, OCell)) ClearResults | NoDrop deriving (Eq, Ord, Read, Show)
 
 -- | @unsafeClear board positions@ takes a board and a collection of positions
 -- on the board which have recently changed, and modifies the board to take
 -- account of four-in-a-rows that involve the given positions. It returns a set
--- of positions which may need gravity applied to them.
+-- of positions which may need gravity applied to them and the contents of any
+-- cells that were actually cleared.
 --
 -- It is the caller's responsibility to ensure that the given positions are in
 -- bounds. Under that assumption, the returned positions definitely will be.
-unsafeClear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> WriterT (Sum Int) m (Set Position)
+unsafeClear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m (Set Position, Map Position OCell)
 unsafeClear mb ps = do
-	(clears_, disconnects_, drops_, viruses_) <- unzip4 <$> mapM clearSingleMatch (toList ps)
-	let clears = S.unions clears_
-	    disconnects = S.unions disconnects_ `S.difference` clears
-	    drops = (S.unions drops_ `S.difference` clears) `S.union` disconnects
-	    viruses = S.unions viruses_
-	forM_ clears $ \p -> munsafeSet mb p Empty
+	(clears_, disconnects_, drops_) <- unzip3 <$> mapM clearSingleMatch (toList ps)
+	let clears = M.unions clears_
+	    clearsSet = M.keysSet clears
+	    disconnects = S.unions disconnects_ `S.difference` clearsSet
+	    drops = (S.unions drops_ `S.difference` clearsSet) `S.union` disconnects
+	forM_ clearsSet $ \p -> munsafeSet mb p Empty
 	forM_ disconnects $ \p -> munsafeModify mb p disconnect
-	tell (Sum (S.size viruses))
-	return drops
+	return (drops, clears)
 	where
 	disconnect (Occupied color shape) = Occupied color Disconnected
 	-- do we want to check that the shape was not Virus or Disconnected before
 	-- and throw an error then, too?
 	disconnect Empty = error "The impossible happened: a pill was connected to an empty space."
 
+	-- TODO: coalesce positions that need to be cleared before calling
+	-- clearSingleCell on them all, maybe (i.e. just return clears here, and do
+	-- an S.fromList in the caller)
 	clearSingleMatch p = do
 		-- the ~ avoids an annoying MonadFail constraint, and should be safe in
 		-- this case
 		~[l,r,u,d] <- mapM (mrunLength mb p) [left, right, up, down]
 		let clears = [p { x = x p + dx } | l+r+1 >= 4, dx <- [-l .. r]]
 		          ++ [p { y = y p + dy } | u+d+1 >= 4, dy <- [-d .. u]]
-		(disconnects_, drops_, viruses_) <- unzip3 <$> mapM clearSingleCell clears
-		return (S.fromList clears, S.unions disconnects_, S.unions drops_, S.unions viruses_)
+		(old, disconnects, drops) <- unzip3 <$> mapM clearSingleCell clears
+		return (M.unions old, S.unions disconnects, S.unions drops)
 
 	clearSingleCell p = do
 		old <- munsafeGet mb p
@@ -596,15 +666,34 @@ unsafeClear mb ps = do
 		    	Occupied _ East  -> ifInBounds left
 		    	Occupied _ West  -> ifInBounds right
 		    	_ -> S.empty
-		    viruses = case old of
-		    	Occupied _ Virus -> S.singleton p
-		    	_ -> S.empty
 		    drops = ifInBounds up
 		    ifInBounds dir = let p'@(Position x y) = unsafeMove dir p in
 		    	if x >= 0 && x < mwidth mb && y >= 0 && y < mheight mb
 		    	then S.singleton p'
 		    	else S.empty
-		return (disconnects, drops, viruses)
+		return (maybe M.empty (M.singleton p) (toOCell old), disconnects, drops)
+
+-- During unsafeDrop, it may be that we process the same position twice: once
+-- as a result of dropping things above something that fell, and once as a
+-- result of the caller asking us to. We want to remember the original cell
+-- that was dropped, so simply using (<>) i.e. M.union to combine our Maps is
+-- fragile (though it probably does work).
+--
+-- It *should* be the case that on the second and later visits, whatever is at
+-- that position doesn't fall. So this type retains whichever cell is
+-- associated with the longer fall. If the falls are equal length, that's
+-- because they're both 0 -- and so should have the same cell anyway, so it's
+-- fine to keep either one in that case.
+--
+-- The Semigroup instance (ab)uses the fact that the fall distance is the fst
+-- part of the map value, so double-check there if you change this newtype
+-- definition.
+newtype LongestFall = LongestFall (Map Position (Int, OCell)) deriving (Eq, Ord, Read, Show)
+instance Semigroup LongestFall where LongestFall m <> LongestFall m' = LongestFall (M.unionWith max m m')
+instance Monoid LongestFall where mempty = LongestFall M.empty
+
+singleFall :: Position -> OCell -> Int -> LongestFall
+singleFall pos cell fallTime = LongestFall (M.singleton pos (fallTime, cell))
 
 -- | @unsafeDrop board positions@ takes a board and a collection of positions
 -- on the board which may have recently become unsupported, and modifies the
@@ -613,7 +702,7 @@ unsafeClear mb ps = do
 --
 -- It is the caller's responsibility to ensure that the given positions are in
 -- bounds. Under that assumption, the returned positions definitely will be.
-unsafeDrop :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> WriterT (Max Int) m (Set Position)
+unsafeDrop :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> WriterT LongestFall m (Set Position)
 unsafeDrop mb ps = do
 	ps_ <- mapM dropSingle (toList ps)
 	let ps' = S.toAscList . S.unions $ ps_
@@ -625,42 +714,58 @@ unsafeDrop mb ps = do
 		here <- munsafeGet mb p
 		case here of
 			Empty -> return S.empty
-			Occupied _ Virus -> return S.empty
-			Occupied _ East  -> dropDouble p (unsafeMove left  p) here
-			Occupied _ West  -> dropDouble p (unsafeMove right p) here
-			_ -> do
-				dy <- mcolorRunLength mb p down Nothing
-				if dy <= 0 then return S.empty else do
-					let p'  = p { y = y p - dy }
-					    y'' = y p + 1
-					    p'' = p { y = y'' }
-					munsafeSet mb p  Empty
-					munsafeSet mb p' here
-					tell (Max dy)
-					if y'' >= mheight mb
-						then return (S.singleton p')
-						else S.insert p' <$> dropSingle p''
+			Occupied c s -> let ohere = OCell c s in case s of
+				Virus -> return S.empty
+				East  -> dropDouble p (unsafeMove left  p) here ohere
+				West  -> dropDouble p (unsafeMove right p) here ohere
+				_ -> do
+					dy <- mcolorRunLength mb p down Nothing
+					-- Call tell even when dy == 0. This is because we want
+					-- some way of reporting which connected cells got
+					-- disconnected; we do this by reporting that a
+					-- Disconnected cell fell 0 from the position we
+					-- disconnected.
+					tell (singleFall p ohere dy)
+					if dy <= 0 then return S.empty else do
+						let p'  = p { y = y p - dy }
+						    y'' = y p + 1
+						    p'' = p { y = y'' }
+						munsafeSet mb p  Empty
+						munsafeSet mb p' here
+						if y'' >= mheight mb
+							then return (S.singleton p')
+							else S.insert p' <$> dropSingle p''
 
-	dropDouble p p' here = do
+	dropDouble p p' here ohere = do
 		there <- munsafeGet mb p'
-		dy_  <- mcolorRunLength mb p  down Nothing
-		dy_' <- mcolorRunLength mb p' down Nothing
-		let dy = min dy_ dy_'
-		if dy <= 0 then return S.empty else do
-			let pDown  = p  { y = y p  - dy }
-			    pDown' = p' { y = y p' - dy }
-			    yUp = y p + 1
-			    pUp  = p  { y = yUp }
-			    pUp' = p' { y = yUp }
-			    drops = S.fromList [pDown, pDown']
-			munsafeSet mb p  Empty
-			munsafeSet mb p' Empty
-			munsafeSet mb pDown   here
-			munsafeSet mb pDown' there
-			tell (Max dy)
-			if yUp >= mheight mb
-				then return drops
-				else liftA2 (\ls rs -> S.unions [drops, ls, rs]) (dropSingle pUp) (dropSingle pUp')
+		case there of
+			-- should never happen, but...
+			Empty -> do
+				munsafeSet mb p (Occupied (ocolor ohere) Disconnected)
+				dropSingle p
+			Occupied c s -> let othere = OCell c s in do
+				dy_  <- mcolorRunLength mb p  down Nothing
+				dy_' <- mcolorRunLength mb p' down Nothing
+				let dy = min dy_ dy_'
+				-- Don't need to call tell when dy == 0, because we're mucking about
+				-- with two cells that are connected horizontally, hence definitely not
+				-- cells that became disconnected.
+				if dy <= 0 then return S.empty else do
+					let pDown  = p  { y = y p  - dy }
+					    pDown' = p' { y = y p' - dy }
+					    yUp = y p + 1
+					    pUp  = p  { y = yUp }
+					    pUp' = p' { y = yUp }
+					    drops = S.fromList [pDown, pDown']
+					munsafeSet mb p  Empty
+					munsafeSet mb p' Empty
+					munsafeSet mb pDown  here
+					munsafeSet mb pDown' there
+					tell (singleFall p  ohere  dy)
+					tell (singleFall p' othere dy)
+					if yUp >= mheight mb
+						then return drops
+						else liftA2 (\ls rs -> S.unions [drops, ls, rs]) (dropSingle pUp) (dropSingle pUp')
 
 -- | How far away is the last valid position with the same color as the given
 -- position in the given direction?
@@ -695,29 +800,47 @@ instance Monoid CleanupResults where mempty = CleanupResults 0 []
 instance Semigroup CleanupResults where
 	CleanupResults c ft <> CleanupResults c' ft' = CleanupResults (c+c') (ft <> ft')
 
+summarizeClearResults :: ClearResults -> CleanupResults
+summarizeClearResults = \case
+	NoClear -> mempty
+	Clear m dr -> CleanupResults
+		{ clears = M.size (M.filter ((Virus==) . oshape) m) + clears drSummary
+		, rowsFallen = case rowsFallen drSummary of [] -> [0]; other -> other
+		} where
+		drSummary = summarizeDropResults dr
+
+summarizeDropResults :: DropResults -> CleanupResults
+summarizeDropResults = \case
+	NoDrop -> mempty
+	Drop m cr | rows <= 0 -> mempty
+	          | otherwise -> CleanupResults
+	          	{ clears = clears crSummary
+	          	, rowsFallen = rows : rowsFallen crSummary
+	          	} where
+		crSummary = summarizeClearResults cr
+		Max rows = foldMap' (Max . fst) m
+
 -- | Loop applying gravity and clearing 4-in-a-rows, until no changes are made.
 --
 -- Caller is responsible for ensuring that the positions provided are in
 -- bounds.
-unsafeDropAndClear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m CleanupResults
-unsafeDropAndClear mb ps
-	| null ps = return CleanupResults { clears = 0, rowsFallen = [] }
-	| otherwise = do
-		(ps', Max n) <- runWriterT (unsafeDrop mb ps)
-		res <- unsafeClearAndDrop mb ps'
-		return res { rowsFallen = max 0 n : rowsFallen res }
+unsafeDropAndClear :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m DropResults
+unsafeDropAndClear mb ps = do
+	(ps', LongestFall falls) <- runWriterT (unsafeDrop mb ps)
+	if M.null falls
+		then pure NoDrop
+		else Drop falls <$> unsafeClearAndDrop mb ps'
 
 -- | Loop clearing 4-in-a-rows and applying gravity, until no changes are made.
 --
 -- Caller is responsible for ensuring that the positions provided are in
 -- bounds.
-unsafeClearAndDrop :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m CleanupResults
-unsafeClearAndDrop mb ps
-	| null ps = return CleanupResults { clears = 0, rowsFallen = [] }
-	| otherwise = do
-		(ps', Sum n) <- runWriterT (unsafeClear mb ps)
-		res <- unsafeDropAndClear mb ps'
-		return res { clears = n + clears res }
+unsafeClearAndDrop :: (Foldable f, PrimMonad m) => MBoard (PrimState m) -> f Position -> m ClearResults
+unsafeClearAndDrop mb ps = do
+	(ps', clearMap) <- unsafeClear mb ps
+	if M.null clearMap
+		then pure NoClear
+		else Clear clearMap <$> unsafeDropAndClear mb ps'
 
 -- | An implementation of the random number generator. Given a current RNG
 -- state, produces the next one.
