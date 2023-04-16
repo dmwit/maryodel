@@ -1,3 +1,4 @@
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE PatternSynonyms #-}
 {-# LANGUAGE TypeApplications #-}
@@ -26,6 +27,7 @@ import Data.Bits
 import Data.Foldable
 import Data.Function
 import Data.Functor
+import Data.Functor.Contravariant
 import Data.Hashable
 import Data.HashMap.Strict (HashMap)
 import Data.List
@@ -78,6 +80,9 @@ instance ToJSON BoxMove where
 
 instance FromJSON BoxMove where
 	parseJSON v = tupleToBoxMove <$> parseJSON v
+
+instance ToJSONKey BoxMove
+instance FromJSONKey BoxMove
 
 -- | Approximate the reachable pill locations. This may return both false
 -- positives (see also the commentary on 'BoxMove' about drop speed) and false
@@ -192,6 +197,7 @@ smallerBox :: BoxMove -> BoxMove -> BoxMove
 smallerBox m m' = if abs (xDelta m) < abs (xDelta m') then m else m'
 
 data HDirection = L | R deriving (Bounded, Enum, Eq, Ord, Read, Show)
+	deriving (ToJSON, FromJSON, ToJSONKey, FromJSONKey) via SingleCharJSON HDirection
 
 data MidStep
 	= Blink
@@ -203,6 +209,9 @@ data MidPath = MidPath
 	{ mpSteps :: [MidStep]
 	, mpPathLength :: {-# UNPACK #-} !Int
 	} deriving (Eq, Ord, Read, Show)
+
+midPath :: [MidStep] -> MidPath
+midPath mps = MidPath mps (length mps)
 
 data MidPlacement = MidPlacement
 	{ mpBottomLeft :: !Position
@@ -276,27 +285,14 @@ instance Hashable MidPlacement where
 		`hashWithSalt` bl
 		`hashWithSalt` rots
 
-hdirectionChar :: HDirection -> Char
-hdirectionChar L = '←'
-hdirectionChar R = '→'
-
-parseHDirection :: Parser HDirection -> Char -> Parser HDirection
-parseHDirection err = \case
-	'←' -> pure L
-	'→' -> pure R
-	_ -> err
-
-instance ToJSON HDirection where
-	toJSON = toJSON . hdirectionChar
-	toJSONList = toJSON . map hdirectionChar
-	toEncoding = toEncoding . hdirectionChar
-	toEncodingList = toEncoding . map hdirectionChar
-
-instance FromJSON HDirection where
-	parseJSON v = parseJSON v >>= parseHDirection err where
-		err = typeMismatch "HDirection (\"←\" or \"→\")" v
-	parseJSONList v = parseJSON v >>= traverse (parseHDirection err) where
-		err = typeMismatch "[HDirection] (string with only '←' and '→' in it)" v
+instance SingleChar HDirection where
+	toChar = \case
+		L -> '←'
+		R -> '→'
+	fromChar = tail [undefined
+		, "←<lL" ~> L
+		, "→>rR" ~> R
+		]
 
 parseMidStep :: String -> Maybe (MidStep, String)
 parseMidStep = \case
@@ -316,6 +312,18 @@ parseMidStep = \case
 		'↺' -> Just (Just Counterclockwise)
 		_ -> Nothing
 
+midStepFromSource :: ParserSource src => src -> Parser MidStep
+midStepFromSource src = srcString src >>= \s -> case parseMidStep s of
+	Just (ms, "") -> pure ms
+	_ -> mismatch "MidStep" src
+
+midStepsFromSource :: ParserSource src => src -> Parser [MidStep]
+midStepsFromSource src = srcString src >>= go where
+	go [] = pure []
+	go s = case parseMidStep s of
+		Just (ms, s') -> (ms:) <$> go s'
+		Nothing -> mismatch "[MidStep]" src
+
 instance ToJSON MidStep where
 	toJSON = toJSON . ppMidStep
 	toJSONList = toJSON . concatMap ppMidStep
@@ -323,21 +331,31 @@ instance ToJSON MidStep where
 	toEncodingList = toEncoding . concatMap ppMidStep
 
 instance FromJSON MidStep where
-	parseJSON v = parseJSON v >>= \s -> case parseMidStep s of
-		Just (ms, "") -> pure ms
-		_ -> typeMismatch "MidStep" v
-	parseJSONList v = parseJSON v >>= go where
-		go [] = pure []
-		go s = case parseMidStep s of
-			Just (ms, s') -> (ms:) <$> go s'
-			Nothing -> typeMismatch "[MidStep]" v
+	parseJSON = midStepFromSource
+	parseJSONList = midStepsFromSource
+
+instance ToJSONKey MidStep where
+	toJSONKey = contramap ppMidStep toJSONKey
+	toJSONKeyList = contramap (concatMap ppMidStep) toJSONKey
+
+instance FromJSONKey MidStep where
+	fromJSONKey = FromJSONKeyTextParser midStepFromSource
+	fromJSONKeyList = FromJSONKeyTextParser midStepsFromSource
 
 instance ToJSON MidPath where
 	toJSON = toJSON . mpSteps
 	toEncoding = toEncoding . mpSteps
 
 instance FromJSON MidPath where
-	parseJSON v = parseJSON v <&> \path -> MidPath path (length path)
+	parseJSON v = midPath <$> parseJSON v
+
+instance ToJSONKey MidPath where
+	toJSONKey = contramap mpSteps toJSONKey
+	toJSONKeyList = contramap (map mpSteps) toJSONKey
+
+instance FromJSONKey MidPath where
+	fromJSONKey = midPath <$> fromJSONKey
+	fromJSONKeyList = map midPath <$> fromJSONKey
 
 midPlacementToTuple :: MidPlacement -> (Position, Int)
 midPlacementToTuple mp = (mpBottomLeft mp, mpRotations mp)
@@ -351,6 +369,9 @@ instance ToJSON MidPlacement where
 
 instance FromJSON MidPlacement where
 	parseJSON v = midPlacementFromTuple <$> parseJSON v
+
+instance ToJSONKey MidPlacement
+instance FromJSONKey MidPlacement
 
 -- TODO: memoize blank rows for 8x16 boards and some sensible range of gravities
 -- | Find lots of reachable positions. There should be no false positives, i.e.
@@ -716,14 +737,8 @@ liftJ2 f ma mb = do
 	f a b
 
 -- debugging only
-ppHDirection :: HDirection -> String
-ppHDirection = pure . hdirectionChar
-
-ppRotation :: Rotation -> String
-ppRotation = pure . rotationChar
-
-ppOrientation :: Orientation -> String
-ppOrientation = pure . orientationChar
+ppSingleChar :: SingleChar a => a -> String
+ppSingleChar = pure . toChar
 
 ppBool :: Bool -> String
 ppBool = \case True -> "✓"; False -> "✗"
@@ -732,7 +747,7 @@ ppMidStep :: MidStep -> String
 ppMidStep = \case
 	Blink -> "(←↻↺)"
 	Down -> "↓"
-	MidStep dir rot -> case foldMap ppHDirection dir <> foldMap ppRotation rot of
+	MidStep dir rot -> case foldMap ppSingleChar dir <> foldMap ppSingleChar rot of
 		[] -> "-"
 		[c] -> [c]
 		ans -> "(" ++ ans ++ ")"
@@ -764,19 +779,19 @@ ppBriefMidLeafInfo :: MidLeafInfo a -> String
 ppBriefMidLeafInfo mli = ""
 	++ ppBackwardsMidSteps (mliPath mli) ++ " "
 	++ show (mliFramesToForcedDrop mli) ++ "↓ "
-	++ [c | dir <- [L, R], c <- eraseIf (dir `elem` mliForbiddenDirection mli) (ppHDirection dir)]
-	++ eraseIf (mliForbiddenCounterclockwise mli) "↺"
+	++ [eraseIf (dir `elem` mliForbiddenDirection mli) (toChar dir) | dir <- [L, R]]
+	++ [eraseIf (mliForbiddenCounterclockwise mli) '↺']
 	++ ppBool (mliOrientable mli)
 	where
-	eraseIf b s = if b then ' ' <$ s else s
+	eraseIf b c = if b then ' ' else c
 
 ppMidLeafInfo :: (Bits a, Num a, Show a) => Int -> MidLeafInfo a -> String
 ppMidLeafInfo w mli = ""
-	++ ppOrientation (mliOrientation mli) ++ "@"
+	++ [toChar (mliOrientation mli), '@']
 	++ show (mliX mli) ++ "/" ++ ppBackwardsBits w (mliExpX mli) ++ ": "
 	++ ppBackwardsMidSteps (mliPath mli) ++ " ("
 		++ show (mliFramesToForcedDrop mli) ++ "↓, "
-		++ [c | dir <- [L, R] \\ toList (mliForbiddenDirection mli), c <- ppHDirection dir]
+		++ [toChar dir | dir <- [L, R] \\ toList (mliForbiddenDirection mli)]
 		++ ['↺' | not (mliForbiddenCounterclockwise mli)] ++ ", "
 		++ ppBool (mliOrientable mli)
 	++ ")"
@@ -803,7 +818,7 @@ ppMidSearchState mss = ""
 ppMidSearchStateST :: (Bits a, Num a, Show a) => MidSearchState s a -> ST s String
 ppMidSearchStateST mss = do
 	b <- mfreeze (mssBoard mss)
-	fcLines <- ifoldMapSTArray (\(x, o) mlis -> [ppOrientation o ++ "@" ++ show x ++ ": " ++ ppList ppBriefMidLeafInfo mlis]) (mssCache mss)
+	fcLines <- ifoldMapSTArray (\(x, o) mlis -> [[toChar o, '@'] ++ show x ++ ": " ++ ppList ppBriefMidLeafInfo mlis]) (mssCache mss)
 	pure $ ""
 		++ pp b
 		++ ppMidSearchState mss

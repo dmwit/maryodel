@@ -47,6 +47,7 @@ import Data.Aeson.Types
 import Data.Bifunctor
 import Data.Bits hiding (rotate)
 import Data.Foldable (toList, foldMap', for_)
+import Data.Functor.Contravariant
 import Data.Hashable (Hashable, hashWithSalt, hashUsing)
 import Data.Ix
 import Data.Map (Map)
@@ -59,6 +60,7 @@ import GHC.Generics
 import qualified Data.List                   as L
 import qualified Data.Map.Strict             as M
 import qualified Data.Set                    as S
+import qualified Data.Text                   as T
 import qualified Data.Vector                 as V
 import qualified Data.Vector.Unboxed         as U
 import qualified Data.Vector.Mutable         as MV
@@ -94,6 +96,8 @@ instance Hashable Position where
 
 instance ToJSON Position where toJSON pos = toJSON (x pos, y pos)
 instance FromJSON Position where parseJSON v = uncurry Position <$> parseJSON v
+instance ToJSONKey Position
+instance FromJSONKey Position
 
 instance Hashable Direction where
 	hashWithSalt s Direction { dx = x, dy = y } = s
@@ -106,23 +110,33 @@ instance Hashable PillContent where
 		`hashWithSalt` bottomLeftColor pc
 		`hashWithSalt` otherColor pc
 
-instance ToJSON PillContent where
-	toJSON pc = toJSON
-		[ orientationChar (orientation pc)
-		, colorChar (bottomLeftColor pc)
-		, colorChar (otherColor pc)
-		]
+ppPillContent :: PillContent -> String
+ppPillContent pc =
+	[ toChar (orientation pc)
+	, toChar (bottomLeftColor pc)
+	, toChar (otherColor pc)
+	]
 
-instance FromJSON PillContent where
-	parseJSON v = do
-		[orient, bl, other] <- parseJSON v
-		pure PillContent
-			<*> parseOrientation err orient
-			<*> parseColor err bl
-			<*> parseColor err other
-		where
-		err :: Parser a
-		err = typeMismatch "PillContent" v
+-- No toJSONList/toJSONKeyList implementation. Although smashing together the
+-- strings for each PillContent would result in something that was
+-- unambiguously parseable back into a list of PillContents, I just like the
+-- list-y syntax better than the mashed-string-y syntax for this type.
+instance ToJSON    PillContent where toJSON = toJSON . ppPillContent
+instance ToJSONKey PillContent where toJSONKey = contramap ppPillContent toJSONKey
+
+parsePillContent :: String -> Parser PillContent
+parsePillContent s = case s of
+	[orient, bl, other] -> pure PillContent
+		<*> parseSingleCharOr err orient
+		<*> parseSingleCharOr err bl
+		<*> parseSingleCharOr err other
+	_ -> err
+	where
+	err :: Parser a
+	err = fail $ "expected PillContent, which is a string with an orientation character followed by two color characters, but instead saw " ++ show s
+
+instance FromJSON    PillContent where parseJSON = parseJSON >=> parsePillContent
+instance FromJSONKey PillContent where fromJSONKey = FromJSONKeyTextParser (parsePillContent . T.unpack)
 
 instance Hashable Pill where
 	hashWithSalt s pill = s
@@ -131,6 +145,8 @@ instance Hashable Pill where
 
 instance ToJSON Pill where toJSON pill = toJSON (content pill, bottomLeftPosition pill)
 instance FromJSON Pill where parseJSON v = uncurry Pill <$> parseJSON v
+instance ToJSONKey Pill
+instance FromJSONKey Pill
 
 instance ToJSON CoarseSpeed
 instance FromJSON CoarseSpeed
@@ -141,10 +157,27 @@ instance Hashable OCell where
 		`hashWithSalt` oshape oc
 
 ocellShowS :: OCell -> String -> String
-ocellShowS (OCell c s) rest = colorChar c : shapeChar s : rest
+ocellShowS (OCell c s) rest = toChar c : toChar s : rest
 
 parseOCell :: (forall a. Parser a) -> Char -> Char -> Parser OCell
-parseOCell err c s = pure OCell <*> parseColor err c <*> parseShape err s
+parseOCell err c s = pure OCell <*> parseSingleCharOr err c <*> parseSingleCharOr err s
+
+ocellFromSource :: ParserSource src => src -> Parser OCell
+ocellFromSource src = srcString src >>= \case
+	[c, s] -> parseOCell err c s
+	_ -> err
+	where
+	err :: Parser a
+	err = mismatch "occupied Cell (color character followed by shape character)" src
+
+ocellsFromSource :: ParserSource src => src -> Parser [OCell]
+ocellsFromSource src = srcString src >>= go where
+	go (c:s:rest) = pure (:) <*> parseOCell err c s <*> go rest
+	go [] = pure []
+	go _ = err
+
+	err :: Parser a
+	err = mismatch "[OCell] (string of alternating colors and shapes)" src
 
 instance ToJSON OCell where
 	toJSON = toJSON . flip ocellShowS ""
@@ -152,20 +185,17 @@ instance ToJSON OCell where
 	toJSONList = toJSON . foldr ocellShowS ""
 	toEncodingList = toEncoding . foldr ocellShowS ""
 
-instance FromJSON OCell where
-	parseJSON v = parseJSON v >>= \case
-		[c, s] -> parseOCell err c s
-		_ -> err
-		where
-		err :: Parser a
-		err = typeMismatch "OCell (color character followed by shape character)" v
-	parseJSONList v = parseJSON v >>= go where
-		go (c:s:rest) = pure (:) <*> parseOCell err c s <*> go rest
-		go [] = pure []
-		go _ = err
+instance ToJSONKey OCell where
+	toJSONKey = contramap (flip ocellShowS "") toJSONKey
+	toJSONKeyList = contramap (foldr ocellShowS "") toJSONKey
 
-		err :: Parser a
-		err = typeMismatch "[OCell] (string of alternating colors and shapes)" v
+instance FromJSON OCell where
+	parseJSON = ocellFromSource
+	parseJSONList = ocellsFromSource
+
+instance FromJSONKey OCell where
+	fromJSONKey = FromJSONKeyTextParser ocellFromSource
+	fromJSONKeyList = FromJSONKeyTextParser ocellsFromSource
 
 toOCell :: Cell -> Maybe OCell
 toOCell Empty = Nothing
