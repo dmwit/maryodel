@@ -25,7 +25,7 @@ module Dr.Mario.Model
 	, move, rotate, rotateContent, place, placeDetails, garbage, clear
 	, randomBoard, unsafeRandomViruses, randomPillContents
 	, advanceRNG, decodeColor, decodePosition, pillContentTable
-	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill
+	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill, launchContent
 	, pp
 	, MBoard, IOBoard
 	, thaw, mfreeze, munsafeFreeze
@@ -904,10 +904,15 @@ startingOtherPosition = Position 4 15
 startingOrientation :: Orientation
 startingOrientation = Horizontal
 
+-- | Initialize a pill's content in the orientation that Dr. Mario launches
+-- them in on the NES.
+launchContent :: Color -> Color -> PillContent
+launchContent = PillContent startingOrientation
+
 -- | Initialize a pill in the position and orientation that Dr. Mario launches
 -- them in on the NES.
 launchPill :: Color -> Color -> Pill
-launchPill l r = Pill (PillContent startingOrientation l r) startingBottomLeftPosition
+launchPill l r = Pill (launchContent l r) startingBottomLeftPosition
 
 -- | A call to @unsafeRandomViruses w h n mpos mcol@ will generate a random
 -- board of width @w@, height @h@, and with @n@ viruses, using the same
