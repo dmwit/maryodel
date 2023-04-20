@@ -570,7 +570,7 @@ getOccupation mb y = go (mwidth mb-1) 0 where
 			_ -> 1
 
 expand :: (Bits a, Num a) => MidSearchState s a -> MidLeafInfo a -> ST s ()
-expand mss mli = expandLeft mss mli >> expandRight mss mli
+expand mss mli = expandLeft mss mli >> expandRight0 mss mli
 
 -- TODO: Is it possible that, while expanding left, we fail to insert because
 -- there's a better solution coming from a previous right expansion, but that
@@ -585,6 +585,26 @@ expandLeft mss mli = when (mliFramesToForcedDrop mli > 0) $
 	for_ (leftMotions mli) $ \step ->
 		for_ (tryStep (mssBoardEnv mss) (mssRowEnv mss) mli step) $ \mli' ->
 			mfcInsertThen mli' mfc (expandLeft mss mli')
+	where mfc = mssCache mss
+
+-- We expand left and then expand right. Consequently, moves that are valid
+-- prefixes of left or right moves, but which themselves do not contain a left
+-- or right move, will be attempted by both expansions. In the expansion to the
+-- right, this seems like a duplication of a previously visited state, but
+-- isn't, because we plan to follow it up with a right move rather than a left
+-- move.
+--
+-- To combat this false positive in search pruning, we let the first step of
+-- expansion to the right skip the duplication check. Note that the "recursive"
+-- call is to expandRight, not expandRight0.
+--
+-- TODO: can we keep the duplication check under more conditions than we do here?
+expandRight0 :: (Bits a, Num a) => MidSearchState s a -> MidLeafInfo a -> ST s ()
+expandRight0 mss mli = when (mliFramesToForcedDrop mli > 0) $
+	for_ (rightMotions mli) $ \step ->
+		for_ (tryStep (mssBoardEnv mss) (mssRowEnv mss) mli step) $ \mli' -> do
+			mfcInsertThen mli' mfc (pure ())
+			expandRight mss mli'
 	where mfc = mssCache mss
 
 expandRight :: (Bits a, Num a) => MidSearchState s a -> MidLeafInfo a -> ST s ()
