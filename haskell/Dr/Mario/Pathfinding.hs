@@ -845,7 +845,7 @@ ppMidSearchStateST mss = do
 		++ unlines fcLines
 
 ppMidPlacement :: MidPlacement -> String
-ppMidPlacement mp = "(" ++ show (x (mpBottomLeft mp)) ++ ", " ++ pad 2 (show (y (mpBottomLeft mp))) ++ ") " ++ replicate (mpRotations mp) '↻' ++ replicate (4-mpRotations mp) ' '
+ppMidPlacement mp = "(" ++ show (x (mpBottomLeft mp)) ++ ", " ++ pad 2 (show (y (mpBottomLeft mp))) ++ ") " ++ replicate (mpRotations mp) '↻' ++ replicate (3-mpRotations mp) ' '
 
 ppMidPath :: MidPath -> String
 ppMidPath = ppMidSteps . mpSteps
