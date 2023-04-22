@@ -26,7 +26,7 @@ module Dr.Mario.Model
 	, randomBoard, unsafeRandomViruses, randomPillContents
 	, advanceRNG, decodeColor, decodePosition, pillContentTable
 	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill, launchContent
-	, pp
+	, pp, ppIO, mppIO, mppST
 	, MBoard, IOBoard
 	, thaw, mfreeze, munsafeFreeze
 	, memptyBoard
@@ -309,6 +309,15 @@ pp b = unlines
 	ppShape South        = "v"
 	ppShape East         = ">"
 	ppShape West         = "<"
+
+ppIO :: Board -> IO ()
+ppIO = putStr . pp
+
+mppIO :: IOBoard -> IO ()
+mppIO = mfreeze >=> ppIO
+
+mppST :: PrimMonad m => MBoard (PrimState m) -> m String
+mppST = fmap pp . mfreeze
 
 -- | Does absolutely no checks that the new position is sensible in any way.
 unsafeMove :: Direction -> Position -> Position
