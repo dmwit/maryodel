@@ -312,7 +312,7 @@ class SingleChar a where
 	-- | Used for errors.
 	typeName :: String
 	default typeName :: (Typeable a, SingleChar a) => String
-	typeName = show (typeRep ([]@a))
+	typeName = show (typeRep ([] @a))
 
 	-- So this is like, kinda unfortunate, in that because it is
 	-- class-polymorphic, this Map might be recomputed at every use. To combat
