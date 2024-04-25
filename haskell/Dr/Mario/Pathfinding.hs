@@ -220,7 +220,7 @@ data MidPlacement = MidPlacement
 
 data MidBoardInfo = MidBoardInfo
 	{ mbiSensitive :: !Bool -- | Could we press down on the very first frame?
-	, mbiGravity :: !Int
+	, mbiGravity :: !Word8
 	, mbiWidth :: !Int
 	} deriving (Eq, Ord, Read, Show)
 
@@ -236,7 +236,7 @@ data MidLeafInfo a = MidLeafInfo
 	, mliX :: {-# UNPACK #-} !Int
 	, mliExpX :: !a
 	, mliOrientation :: !Orientation
-	, mliFramesToForcedDrop :: {-# UNPACK #-} !Int
+	, mliFramesToForcedDrop :: {-# UNPACK #-} !Word8
 	, mliForbiddenDirection :: Maybe HDirection
 	-- We don't need a mliForbiddenClockwise because we only ever rotate when
 	-- it would succeed, when vertical we only rotate clockwise, and when
@@ -382,7 +382,7 @@ instance FromJSONKey MidPlacement
 --
 -- Arguments are the board, whether the game is watching for a down press on
 -- the first frame of movement, and the current gravity (in frames per row).
-mapproxReachable :: PrimMonad m => MBoard (PrimState m) -> Bool -> Int -> m (HashMap MidPlacement MidPath)
+mapproxReachable :: PrimMonad m => MBoard (PrimState m) -> Bool -> Word8 -> m (HashMap MidPlacement MidPath)
 mapproxReachable mb sensitive gravity = stToPrim $ HM.fromListWith shorterPath <$>
 	if mwidth mb <= 64
 	then midInitialize @Word64  mb sensitive gravity >>= midSearch
@@ -402,7 +402,7 @@ midSearch mss = do
 			traverse_ (expand mss') good
 			midSearch mss'
 
-midInitialize :: (Bits a, Num a) => MBoard s -> Bool -> Int -> ST s (MidSearchState s a)
+midInitialize :: (Bits a, Num a) => MBoard s -> Bool -> Word8 -> ST s (MidSearchState s a)
 midInitialize mb sensitive gravity = do
 	occupiedHere <- getOccupation mb y
 	cache <- newSTArray ((0, minBound), (xMax, maxBound)) []

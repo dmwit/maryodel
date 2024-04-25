@@ -54,6 +54,7 @@ import Data.Map (Map)
 import Data.Semigroup
 import Data.Monoid
 import Data.Primitive.MutVar
+import Data.Primitive.PrimVar
 import Data.Set (Set)
 import Data.Word
 import GHC.Generics
@@ -246,7 +247,7 @@ up    = Direction   0   1
 down  = Direction   0 (-1)
 
 -- | For NTSC NES Dr. Mario.
-gravityTable :: U.Vector Int
+gravityTable :: U.Vector Word8
 gravityTable = U.fromList [70, 68, 66, 64, 62, 60, 58, 56, 54, 52, 50, 48, 46, 44, 42, 40, 38, 36, 34, 32, 30, 28, 26, 24, 22, 20, 19, 18, 17, 16, 15, 14, 13, 12, 11, 10, 10, 9, 9, 8, 8, 7, 7, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 6, 5, 5, 5, 5, 5, 4, 4, 4, 4, 4, 3, 3, 3, 3, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 1]
 
 -- | The starting index into 'gravityTable' used by NES Dr. Mario.
@@ -261,7 +262,7 @@ gravityIndex = \case
 -- The @Int@ argument is how many pills have already been locked since the
 -- level started. Probably doesn't do anything sane with negative inputs, but
 -- at least it won't crash.
-gravity :: CoarseSpeed -> Int -> Int
+gravity :: CoarseSpeed -> Int -> Word8
 gravity speed pills = gravityTable `U.unsafeIndex` (max 0 . min 80) (gravityIndex speed + pillPenalty) where
 	pillPenalty = min 49 $ (pills+2) `quot` 10
 
@@ -950,12 +951,12 @@ randomBoard seed level = runST (mrandomBoard seed level >>= munsafeFreeze)
 -- 0).
 mnewRNG :: PrimMonad m => Word16 -> m (m Word16)
 mnewRNG seed = do
-	ref <- newMutVar seed
+	ref <- newPrimVar seed
 	return $ do
-		-- Could modifyMutVar >> readMutVar, but that's one more dereference
-		-- than this. I wish modifyMutVar would just return the new result...
-		seed' <- advanceRNG <$> readMutVar ref
-		writeMutVar ref seed'
+		-- Could modifyPrimVar >> readPrimVar, but that's one more dereference
+		-- than this. I wish modifyPrimVar would just return the new result...
+		seed' <- advanceRNG <$> readPrimVar ref
+		writePrimVar ref seed'
 		return seed'
 
 -- | Turn a random number generator action into an action that produces a
@@ -1148,3 +1149,39 @@ mcountViruses = fmap getSum . mofoldMap countVirusesInjection
 -- gravity after the map.
 unsafeMap :: (Cell -> Cell) -> Board -> Board
 unsafeMap f b = b { cells = V.map (U.map f) (cells b) }
+
+data Phase
+	= ThrowingAnimation Word -- ^ how many frames of animation we've done so far
+	| ClearingAnimation [Position] Word
+	| FallingAnimation [Position] Word -- ^ list is sorted so that low positions appear before high positions; the frame counter is reset to 0 each time the board is updated
+	| Control Pill (Set Direction) (Set Rotation) Word -- ^ buttons that were pressed last frame and gravity counter
+	| GameOver Bool -- ^ 'True' for a win, 'False' for a loss
+	deriving (Eq, Ord, Show)
+
+data AnimationDurations = AnimationDurations
+	{ durThrow, durClear, durFall :: Word
+	, durLock :: U.Vector Word
+	} deriving (Eq, Ord, Read, Show)
+
+nesDurations :: AnimationDurations
+nesDurations = undefined
+
+-- There isn't currently an immutable version of this data structure, so it
+-- doesn't strictly speaking need to have M in the name to avoid name clashes.
+-- But let's include it anyway in case we want to make an immutable version in
+-- the future without breaking every piece of client code ever written against
+-- it.
+data MPlayerState s = MPlayerState
+	{ mpsBoard :: MBoard s
+	, mpsFrame :: PrimVar s Word
+	, mpsPill :: PrimVar s Word
+	, mpsDAS :: PrimVar s Word8
+	, mpsPhase :: MutVar s Phase
+	, mpsDurations :: AnimationDurations
+	}
+
+type IOPlayerState = MPlayerState (PrimState IO)
+
+mpsStep :: PrimMonad m => MPlayerState (PrimState m) -> Set Direction -> Set Rotation -> m ()
+mpsStep mps dirs rots = readMutVar (mpsPhase mps) >>= \case
+	_ -> undefined

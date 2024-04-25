@@ -56,7 +56,7 @@ data Color = Red | Yellow | Blue
 
 -- | A horizontal pill has a 'West' shape to the left of an 'East' shape, and a
 -- vertical pill has a 'North' shape above a 'South' shape.
-data Shape = Virus | Disconnected | North | South | East | West
+data Shape = Virus | Disconnected | North | South | East | West | Clearing
 	deriving (Bounded, Enum, Eq, Ord, Read, Show)
 	deriving (ToJSON, FromJSON, ToJSONKey, FromJSONKey) via SingleCharJSON Shape
 
@@ -89,7 +89,8 @@ decodeCell w = Occupied color shape where
 		8  -> North
 		12 -> South
 		16 -> East
-		_  -> West
+		20 -> West
+		_  -> Clearing
 
 {-# INLINE encodeCell #-}
 encodeCell :: Cell -> Word8
@@ -106,6 +107,7 @@ encodeCell (Occupied color shape) = colorWord .|. shapeWord where
 		South        -> 12
 		East         -> 16
 		West         -> 20
+		Clearing     -> 24
 
 newtype instance U.MVector s Cell = MVCell (U.MVector s Word8)
 newtype instance U.Vector    Cell =  VCell (U.Vector    Word8)
@@ -153,6 +155,7 @@ instance SingleChar Rotation where
 		Counterclockwise -> '↺'
 	fromChar = tail [undefined
 		, "↻cC" ~> Clockwise
+		-- widdershins lol
 		, "↺wW" ~> Counterclockwise
 		]
 
@@ -175,6 +178,7 @@ instance SingleChar Shape where
 		South -> '∪'
 		East -> '⊃'
 		West -> '⊂'
+		Clearing -> '•'
 	fromChar = tail [undefined
 		, "x"   ~> Virus
 		, "o"   ~> Disconnected
@@ -182,6 +186,7 @@ instance SingleChar Shape where
 		, "∪vV" ~> South
 		, "⊃>"  ~> East
 		, "⊂<"  ~> West
+		, "•∙·*"   ~> Clearing
 		]
 
 cellShowS :: Cell -> String -> String
