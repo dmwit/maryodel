@@ -50,7 +50,7 @@ import qualified Data.Vector.Primitive.Mutable    as DVPM
 import qualified Data.Vector.Unboxed              as U
 import qualified Data.Vector.Unboxed.Mutable      as MV
 
-data Color = Red | Yellow | Blue
+data Color = Blue | Red | Yellow
 	deriving (Bounded, Enum, Eq, Ord, Read, Show)
 	deriving (ToJSON, FromJSON, ToJSONKey, FromJSONKey) via SingleCharJSON Color
 
@@ -80,9 +80,9 @@ decodeCell :: Word8 -> Cell
 decodeCell 0xff = Empty
 decodeCell w = Occupied color shape where
 	color = case w .&. 0b11 of
-		0 -> Red
-		1 -> Yellow
-		_ -> Blue
+		0 -> Blue
+		1 -> Red
+		_ -> Yellow
 	shape = case w .&. 0b11100 of
 		0  -> Virus
 		4  -> Disconnected
@@ -96,9 +96,9 @@ encodeCell :: Cell -> Word8
 encodeCell Empty = 0xff
 encodeCell (Occupied color shape) = colorWord .|. shapeWord where
 	colorWord = case color of
-		Red    -> 0
-		Yellow -> 1
-		Blue   -> 2
+		Blue   -> 0
+		Red    -> 1
+		Yellow -> 2
 	shapeWord = case shape of
 		Virus        ->  0
 		Disconnected ->  4
