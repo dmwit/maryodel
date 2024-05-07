@@ -12,7 +12,8 @@ module Dr.Mario.Model
 	, Position(..)
 	, Direction, left, right, down, unsafeMove
 	, Rotation(..), chiral
-	, PillContent(..), bottomLeftCell, otherCell
+	, Lookahead(..), lookaheadFromPillContent, lookaheadFromPill, mirror
+	, PillContent(..), pillContentFromLookahead, bottomLeftCell, otherCell
 	, Pill(..), otherPosition
 	, CoarseSpeed(..), gravityTable, gravityIndex, gravity
 	, CleanupResults(..)
@@ -24,7 +25,7 @@ module Dr.Mario.Model
 	, get, getColor, unsafeGet, ofoldMap, ofoldMapWithKey, unsafeMap, countViruses
 	, move, rotate, rotateContent, place, placeDetails, garbage, clear
 	, randomBoard, unsafeRandomViruses, randomPillContents
-	, advanceRNG, decodeColor, decodePosition, pillContentTable
+	, advanceRNG, decodeColor, decodePosition, lookaheadTable
 	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill, launchContent
 	, pp, ppIO, mppIO, mppST
 	, MBoard, IOBoard
@@ -33,7 +34,7 @@ module Dr.Mario.Model
 	, mwidth, mheight
 	, mget, munsafeGet, mofoldMap, mofoldMapWithKey, mcountViruses
 	, minfect, mplace, mplaceDetails, mgarbage, mclear
-	, mrandomBoard, munsafeRandomBoard, munsafeRandomViruses, mrandomPillContents
+	, mrandomBoard, munsafeRandomBoard, munsafeRandomViruses, mrandomLookaheads
 	, mnewRNG, mrandomColor, mrandomPosition
 	) where
 
@@ -73,6 +74,7 @@ import Dr.Mario.Util
 -- | Uses the math convention: the bottom of a 'Board' is at 'y'=0, the top at some positive 'y'.
 data Position = Position { x, y :: !Int } deriving (Eq, Ord, Read, Show)
 data Direction = Direction { dx, dy :: !Int } deriving (Eq, Ord, Show)
+data Lookahead = Lookahead { leftColor, rightColor :: !Color } deriving (Eq, Ord, Read, Show)
 data PillContent = PillContent
 	{ orientation :: !Orientation
 	, bottomLeftColor, otherColor :: !Color
@@ -103,6 +105,31 @@ instance Hashable Direction where
 	hashWithSalt s Direction { dx = x, dy = y } = s
 		`hashWithSalt` x
 		`hashWithSalt` y
+
+instance Hashable Lookahead where
+	hashWithSalt s lk = s
+		`hashWithSalt` leftColor lk
+		`hashWithSalt` rightColor lk
+
+ppLookahead :: Lookahead -> String
+ppLookahead lk = toChar <$> [leftColor lk, rightColor lk]
+
+-- No toJSONList/toJSONKeyList implementation; same reason as for PillContent.
+instance ToJSON    Lookahead where toJSON = toJSON . ppLookahead
+instance ToJSONKey Lookahead where toJSONKey = contramap ppLookahead toJSONKey
+
+parseLookahead :: String -> Parser Lookahead
+parseLookahead s = case s of
+	[l, r] -> pure Lookahead
+		<*> parseSingleCharOr err l
+		<*> parseSingleCharOr err r
+	_ -> err
+	where
+	err :: Parser a
+	err = fail $ "expected Lookahead, which is a string with two color characters, but instead saw " ++ show s
+
+instance FromJSON    Lookahead where parseJSON = parseJSON >=> parseLookahead
+instance FromJSONKey Lookahead where fromJSONKey = FromJSONKeyTextParser (parseLookahead . T.unpack)
 
 instance Hashable PillContent where
 	hashWithSalt s pc = s
@@ -217,6 +244,22 @@ bottomLeftShape Vertical = South
 otherShape :: Orientation -> Shape
 otherShape Horizontal = East
 otherShape Vertical = North
+
+mirror :: Lookahead -> Lookahead
+mirror (Lookahead l r) = Lookahead r l
+
+pillContentFromLookahead :: Orientation -> Lookahead -> PillContent
+pillContentFromLookahead o lk = PillContent
+	{ orientation = o
+	, bottomLeftColor = leftColor lk
+	, otherColor = rightColor lk
+	}
+
+lookaheadFromPillContent :: PillContent -> Lookahead
+lookaheadFromPillContent pc = Lookahead (bottomLeftColor pc) (otherColor pc)
+
+lookaheadFromPill :: Pill -> Lookahead
+lookaheadFromPill = lookaheadFromPillContent . content
 
 bottomLeftCell :: PillContent -> Cell
 bottomLeftCell c = Occupied (bottomLeftColor c) (bottomLeftShape (orientation c))
@@ -915,13 +958,13 @@ startingOrientation = Horizontal
 
 -- | Initialize a pill's content in the orientation that Dr. Mario launches
 -- them in on the NES.
-launchContent :: Color -> Color -> PillContent
-launchContent = PillContent startingOrientation
+launchContent :: Lookahead -> PillContent
+launchContent = pillContentFromLookahead startingOrientation
 
 -- | Initialize a pill in the position and orientation that Dr. Mario launches
 -- them in on the NES.
-launchPill :: Color -> Color -> Pill
-launchPill l r = Pill (launchContent l r) startingBottomLeftPosition
+launchPill :: Lookahead -> Pill
+launchPill lk = Pill (launchContent lk) startingBottomLeftPosition
 
 -- | A call to @unsafeRandomViruses w h n mpos mcol@ will generate a random
 -- board of width @w@, height @h@, and with @n@ viruses, using the same
@@ -1074,36 +1117,36 @@ munsafeRandomBoard mrng level = do
 	virusCount = max 4 . min 84 $ (level+1) `shiftL` 2
 
 -- | Turn a random number generator action into an action that produces a
--- random 'PillContent' in the same weird way that Dr. Mario does.
-mrandomPillContent :: Monad m => m Word16 -> Word16 -> m (Word16, PillContent)
-mrandomPillContent mrng pc = do
+-- random 'Lookahead' in the same weird way that Dr. Mario does.
+mrandomLookahead :: Monad m => m Word16 -> Word16 -> m (Word16, Lookahead)
+mrandomLookahead mrng pc = do
 	seed <- mrng
 	let pc' = ((shiftR seed 8 .&. 0xf) + pc) `mod` 9
-	pure (pc', pillContentTable V.! fromIntegral pc')
+	pure (pc', lookaheadTable V.! fromIntegral pc')
 
 -- | The nine possible (horizontal) pills.
-pillContentTable :: V.Vector PillContent
-pillContentTable = V.fromListN 9
-	[ PillContent Horizontal l r
+lookaheadTable :: V.Vector Lookahead
+lookaheadTable = V.fromListN 9
+	[ Lookahead l r
 	| l <- [Yellow, Red, Blue]
 	, r <- [Yellow, Red, Blue]
 	]
 
 -- | Generate 128 pills in exactly the same way Dr. Mario does. See e.g.
 -- 'mnewRNG' for the first argument.
-mrandomPillContents :: PrimMonad m => m Word16 -> m (V.Vector PillContent)
-mrandomPillContents mrng = do
+mrandomLookaheads :: PrimMonad m => m Word16 -> m (V.Vector Lookahead)
+mrandomLookaheads mrng = do
 	mpcs <- MV.new 128
-	let go m (-1) = mrandomPillContent mrng m >>= MV.unsafeWrite mpcs 127 . snd
+	let go m (-1) = mrandomLookahead mrng m >>= MV.unsafeWrite mpcs 127 . snd
 	    go m i = do
-	    	(m', pc) <- mrandomPillContent mrng m
+	    	(m', pc) <- mrandomLookahead mrng m
 	    	MV.unsafeWrite mpcs i pc
 	    	go m' (i-1)
 	go 0 126
 	V.unsafeFreeze mpcs
 
-randomPillContents :: Word16 -> V.Vector PillContent
-randomPillContents seed = runST (mnewRNG seed >>= mrandomPillContents)
+randomPillContents :: Word16 -> V.Vector Lookahead
+randomPillContents seed = runST (mnewRNG seed >>= mrandomLookaheads)
 
 -- | A monomorphic 'foldMap'. No promises about what order the 'Cell's are
 -- visited in.

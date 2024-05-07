@@ -126,9 +126,9 @@ unsafeApproxReachable b p = HM.fromListWith smallerBox $ concatMap dropColumn [l
 		xl = x-1
 		xr = x+1
 
-	PillContent { bottomLeftColor = lc, otherColor = rc } = content p
-	horizPillsP = horizPills lc rc
-	vertPillsP  = vertPills  lc rc
+	lk = lookaheadFromPill p
+	horizPillsP = horizPills lk
+	vertPillsP  = vertPills  lk
 
 	unsafeIsEmpty x y = unsafeGet b (Position x y) == Empty
 
@@ -170,28 +170,28 @@ munsafeApproxReachable mb p = do
 		xl = x-1
 		xr = x+1
 
-	PillContent { bottomLeftColor = lc, otherColor = rc } = content p
-	horizPillsP = horizPills lc rc
-	vertPillsP  = vertPills  lc rc
+	lk = lookaheadFromPill p
+	horizPillsP = horizPills lk
+	vertPillsP  = vertPills  lk
 
 	munsafeIsEmpty x y = (Empty==) <$> munsafeGet mb (Position x y)
 
 {-# INLINE horizPills #-}
 {-# INLINE  vertPills #-}
-horizPills, vertPills :: Color -> Color -> Position -> Int -> Int -> [(Pill, BoxMove)]
-horizPills lc rc = \pos dx dy -> tail $ [undefined
+horizPills, vertPills :: Lookahead -> Position -> Int -> Int -> [(Pill, BoxMove)]
+horizPills lk = \pos dx dy -> tail $ [undefined
 	, (Pill pc  pos, BoxMove Clockwise dx dy (Just Counterclockwise))
 	, (Pill pc' pos, BoxMove Clockwise dx dy (Just Clockwise))
 	] where
-	pc  = PillContent Horizontal lc rc
-	pc' = PillContent Horizontal rc lc
+	pc  = pillContentFromLookahead Horizontal lk
+	pc' = pillContentFromLookahead Horizontal (mirror lk)
 
-vertPills lc rc = \pos dx dy -> tail $ [undefined
+vertPills lk = \pos dx dy -> tail $ [undefined
 	, (Pill pc  pos, BoxMove Counterclockwise dx dy Nothing)
 	, (Pill pc' pos, BoxMove        Clockwise dx dy Nothing)
 	] where
-	pc  = PillContent Vertical lc rc
-	pc' = PillContent Vertical rc lc
+	pc  = pillContentFromLookahead Vertical lk
+	pc' = pillContentFromLookahead Vertical (mirror lk)
 
 smallerBox :: BoxMove -> BoxMove -> BoxMove
 smallerBox m m' = if abs (xDelta m) < abs (xDelta m') then m else m'
@@ -443,17 +443,14 @@ midInitialize mb sensitive gravity = do
 shorterPath :: MidPath -> MidPath -> MidPath
 shorterPath mp mp' = if mpPathLength mp < mpPathLength mp' then mp else mp'
 
-mpPill :: MidPlacement -> Color -> Color -> Pill
-mpPill mp l r = Pill
+mpPill :: MidPlacement -> Lookahead -> Pill
+mpPill mp lk = Pill
 	{ bottomLeftPosition = mpBottomLeft mp
-	, content = PillContent
-		{ orientation = toEnum (rots .&. 1)
-		, bottomLeftColor = if flipped then r else l
-		, otherColor = if flipped then l else r
-		}
+	, content = pillContentFromLookahead
+		(toEnum (rots .&. 1))
+		(if rots == 1 || rots == 2 then mirror lk else lk)
 	} where
 	rots = mpRotations mp .&. 3
-	flipped = rots == 1 || rots == 2
 
 pcompare :: MidLeafInfo a -> MidLeafInfo a -> POrdering
 pcompare mli mli' = mempty
