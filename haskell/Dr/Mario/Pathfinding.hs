@@ -431,8 +431,9 @@ midInitialize mb sensitive gravity = do
 	    	, mliForbiddenCounterclockwise = False
 	    	, mliOrientable = False
 	    	}
-	mfcInsert cache mli
-	expand mss mli
+	when ((occupiedHere `shiftR` x) .&. 3 == 0) $ do
+		mfcInsert cache mli
+		expand mss mli
 	pure mss
 	where
 	w = mwidth mb
