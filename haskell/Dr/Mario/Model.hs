@@ -24,7 +24,7 @@ module Dr.Mario.Model
 	, width, height
 	, get, getColor, unsafeGet, ofoldMap, ofoldMapWithKey, unsafeMap, countViruses
 	, move, rotate, rotateContent, place, placeDetails, garbage, clear
-	, randomBoard, unsafeRandomViruses, randomLookaheads
+	, randomLevel, randomBoard, unsafeRandomViruses, randomLookaheads
 	, advanceRNG, decodeColor, decodePosition, lookaheadTable
 	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill, launchContent
 	, pp, ppIO, mppIO, mppST
@@ -34,7 +34,7 @@ module Dr.Mario.Model
 	, mwidth, mheight
 	, mget, munsafeGet, mofoldMap, mofoldMapWithKey, mcountViruses
 	, minfect, mplace, mplaceDetails, mgarbage, mclear
-	, mrandomBoard, munsafeRandomBoard, munsafeRandomViruses, mrandomLookaheads
+	, mrandomLevel, munsafeRandomLevel, mrandomBoard, munsafeRandomBoard, munsafeRandomViruses, mrandomLookaheads
 	, mnewRNG, mrandomColor, mrandomPosition
 	) where
 
@@ -990,6 +990,18 @@ unsafeRandomViruses w h n mpos mcol = do
 randomBoard :: Word16 -> Int -> Board
 randomBoard seed level = runST (mrandomBoard seed level >>= munsafeFreeze)
 
+-- | @randomLevel seed level@ generates lookaheads and a random board in
+-- exactly the same way that Dr. Mario would, starting from RNG state given by
+-- @seed@. Since lookaheads are generated first, be aware that this will give a
+-- different board than @randomBoard seed level@!
+randomLevel :: Word16 -> Int -> (V.Vector Lookahead, Board)
+randomLevel seed level = runST $ do
+	g <- mnewRNG seed
+	lks <- mrandomLookaheads g
+	mb <- munsafeRandomBoard g level
+	b <- mfreeze mb
+	pure (lks, b)
+
 -- | Given a seed, produce an action which you can call repeatedly to get the
 -- random sequence that the NES Dr. Mario's random number generator would
 -- produce. The seed is not produced as the first result (unless the seed is
@@ -1118,6 +1130,16 @@ munsafeRandomBoard mrng level = do
 	where
 	height     = max 9 . min 12 $ (level+5) `shiftR` 1
 	virusCount = max 4 . min 84 $ (level+1) `shiftL` 2
+
+-- | Combines 'mrandomLookaheads' and 'mrandomBoard'.
+mrandomLevel :: PrimMonad m => Word16 -> Int -> m (V.Vector Lookahead, MBoard (PrimState m))
+mrandomLevel seed level = mnewRNG seed >>= flip munsafeRandomLevel level
+
+-- | Combines 'mrandomLookaheads' and 'munsafeRandomBoard'.
+munsafeRandomLevel :: PrimMonad m => m Word16 -> Int -> m (V.Vector Lookahead, MBoard (PrimState m))
+munsafeRandomLevel mrng level = liftA2 (,)
+	(mrandomLookaheads mrng)
+	(munsafeRandomBoard mrng level)
 
 -- | Turn a random number generator action into an action that produces a
 -- random 'Lookahead' in the same weird way that Dr. Mario does.
