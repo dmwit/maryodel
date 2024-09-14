@@ -24,7 +24,7 @@ module Dr.Mario.Model
 	, width, height
 	, get, getColor, unsafeGet, ofoldMap, ofoldMapWithKey, unsafeMap, countViruses
 	, move, rotate, rotateContent, place, placeDetails, garbage, clear
-	, randomBoard, unsafeRandomViruses, randomPillContents
+	, randomBoard, unsafeRandomViruses, randomLookaheads
 	, advanceRNG, decodeColor, decodePosition, lookaheadTable
 	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill, launchContent
 	, pp, ppIO, mppIO, mppST
@@ -1148,8 +1148,8 @@ mrandomLookaheads mrng = do
 	go 0 126
 	V.unsafeFreeze mpcs
 
-randomPillContents :: Word16 -> V.Vector Lookahead
-randomPillContents seed = runST (mnewRNG seed >>= mrandomLookaheads)
+randomLookaheads :: Word16 -> V.Vector Lookahead
+randomLookaheads seed = runST (mnewRNG seed >>= mrandomLookaheads)
 
 -- | A monomorphic 'foldMap'. No promises about what order the 'Cell's are
 -- visited in.
