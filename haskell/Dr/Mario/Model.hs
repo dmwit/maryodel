@@ -58,6 +58,7 @@ import Data.Primitive.MutVar
 import Data.Set (Set)
 import Data.Word
 import GHC.Generics
+import System.IO
 import qualified Data.List                   as L
 import qualified Data.Map.Strict             as M
 import qualified Data.Set                    as S
@@ -353,8 +354,10 @@ pp b = unlines
 	ppShape East         = ">"
 	ppShape West         = "<"
 
+-- the flush is needed because the color reset is after the final newline, and
+-- the caller might be about to let the user type on stdin with echoing on
 ppIO :: Board -> IO ()
-ppIO = putStr . pp
+ppIO b = putStr (pp b) >> hFlush stdout
 
 mppIO :: IOBoard -> IO ()
 mppIO = mfreeze >=> ppIO
