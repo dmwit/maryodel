@@ -27,6 +27,7 @@ module Dr.Mario.Model
 	, randomLevel, randomBoard, unsafeRandomViruses, randomLookaheads
 	, advanceRNG, decodeColor, decodePosition, lookaheadTable
 	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill, launchContent
+	, ntscFrameRate
 	, pp, ppIO, mppIO, mppST
 	, MBoard, IOBoard
 	, thaw, mfreeze, munsafeFreeze
@@ -329,6 +330,10 @@ getColor b = get b >=> color
 -- | Does not check that the position is in bounds.
 unsafeGet :: Board -> Position -> Cell
 unsafeGet b p = cells b `V.unsafeIndex` x p `U.unsafeIndex` y p
+
+-- | The frame rate the NTSC NES outputs (in frames per second).
+ntscFrameRate :: Fractional a => a
+ntscFrameRate = 60.0988
 
 -- | For debugging purposes only. Not particularly efficient.
 pp :: Board -> String
