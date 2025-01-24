@@ -25,7 +25,7 @@ module Dr.Mario.Model
 	, get, getColor, unsafeGet, ofoldMap, ofoldMapWithKey, unsafeMap, countViruses
 	, move, rotate, rotateContent, place, placeDetails, garbage, clear
 	, randomLevel, randomBoard, unsafeRandomViruses, randomLookaheads
-	, advanceRNG, decodeColor, decodePosition, lookaheadTable
+	, advanceRNG, retreatRNG, retreatRNG', decodeColor, decodePosition, lookaheadTable
 	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill, launchContent
 	, ntscFrameRate
 	, pp, ppIO, mppIO, mppST
@@ -936,6 +936,17 @@ unsafeClearAndDrop mb ps = do
 -- state, produces the next one.
 advanceRNG :: Word16 -> Word16
 advanceRNG seed = seed `shiftR` 1 .|. if testBit seed 1 == testBit seed 9 then 0 else bit 15
+
+-- | Back the RNG state up one step. @advanceRNG . retreatRNG@ and @retreatRNG
+-- . advanceRNG@ are almost the identity -- they may toggle the bottom bit.
+retreatRNG :: Word16 -> Word16
+retreatRNG seed = shiftL (seed `xor` ((seed `xor` shiftR seed 8 `xor` shiftR seed 15) .&. 1)) 1
+
+-- | A little over half of possible 'Word16's cannot be the output of
+-- 'advanceRNG'. This function is just like 'retreatRNG', except that it
+-- promises to produce an 'advanceRNG' output and is a little bit slower.
+retreatRNG' :: Word16 -> Word16
+retreatRNG' = advanceRNG . retreatRNG . retreatRNG
 
 -- | Choose a color from an RNG state in the same (biased) way that Dr. Mario does.
 decodeColor :: Word16 -> Color
