@@ -152,8 +152,8 @@ instance SingleChar Rotation where
 		Clockwise -> '↻'
 		Counterclockwise -> '↺'
 	fromChar = tail [undefined
-		, "↻cC" ~> Clockwise
-		, "↺wW" ~> Counterclockwise
+		, "↻cCaA" ~> Clockwise
+		, "↺wWbB" ~> Counterclockwise
 		]
 
 instance SingleChar Color where

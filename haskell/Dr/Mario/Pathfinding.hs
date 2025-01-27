@@ -243,6 +243,8 @@ data MidLeafInfo a = MidLeafInfo
 	-- the same rotation button two frames in a row. The exception is blinking.
 	-- Since we need to prevent rotating before a blink and blinking before a
 	-- rotate, we need to track both kinds of rotation.
+	-- TODO: would bit-packing the orientation, forbidden rotations, and
+	-- orientability improve the speed?
 	, mliForbiddenClockwise :: !Bool
 	, mliForbiddenCounterclockwise :: !Bool
 	, mliOrientable :: !Bool
@@ -482,6 +484,12 @@ mliTryInsert mli = go where
 			PGT -> Nothing
 			PIN -> (mli':) <$> go mlis
 
+-- mliInsert could be implemented as a straightforward recursion rather than
+-- dispatching to the convoluted recursion done in mliTryInsert. That would
+-- likely be about as fast, because it would avoid a lot of Maybe allocations
+-- but at the cost of an equal number of new cons cell allocations, while being
+-- more readable. But in other parts of the code we need mliTryInsert to report
+-- whether anything changed, so in the interest of DRY, we just reuse it here.
 mliInsert :: MidLeafInfo a -> [MidLeafInfo a] -> [MidLeafInfo a]
 mliInsert mli mlis = fromMaybe mlis $ mliTryInsert mli mlis
 
@@ -805,7 +813,7 @@ ppBriefMidLeafInfo mli = ""
 	++ ppBackwardsMidSteps (mliPath mli) ++ " "
 	++ show (mliFramesToForcedDrop mli) ++ "↓ "
 	++ [eraseIf (dir `elem` mliForbiddenDirection mli) (toChar dir) | dir <- [L, R]]
-	++ [eraseIf (mliForbiddenCounterclockwise mli) '↺']
+	++ [eraseIf (f mli) (toChar rot) | (rot, f) <- rotationChecks]
 	++ ppBool (mliOrientable mli)
 	where
 	eraseIf b c = if b then ' ' else c
@@ -817,9 +825,12 @@ ppMidLeafInfo w mli = ""
 	++ ppBackwardsMidSteps (mliPath mli) ++ " ("
 		++ show (mliFramesToForcedDrop mli) ++ "↓, "
 		++ [toChar dir | dir <- [L, R] \\ toList (mliForbiddenDirection mli)]
-		++ ['↺' | not (mliForbiddenCounterclockwise mli)] ++ ", "
+		++ [toChar rot | (rot, f) <- rotationChecks, not (f mli)] ++ ", "
 		++ ppBool (mliOrientable mli)
 	++ ")"
+
+rotationChecks :: [(Rotation, MidLeafInfo a -> Bool)]
+rotationChecks = [(Clockwise, mliForbiddenClockwise), (Counterclockwise, mliForbiddenCounterclockwise)]
 
 ppMidRowInfo :: (Bits a, Num a, Show a) => Int -> MidRowInfo a -> String
 ppMidRowInfo w mri = ""
