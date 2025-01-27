@@ -238,13 +238,12 @@ data MidLeafInfo a = MidLeafInfo
 	, mliOrientation :: !Orientation
 	, mliFramesToForcedDrop :: {-# UNPACK #-} !Int
 	, mliForbiddenDirection :: Maybe HDirection
-	-- We don't need a mliForbiddenClockwise because we only ever rotate when
-	-- it would succeed, when vertical we only rotate clockwise, and when
-	-- horizontal only rotate counterclockwise, so we never try to rotate the
-	-- same direction two frames in a row. The only exception to this is
-	-- blinking, which we only ever do when horizontal. So we need to record
-	-- when we've just blinked to remember not to try to rotate
-	-- counterclockwise immediately after.
+	-- Under normal circumstances, we only ever rotate clockwise when vertical
+	-- and counterclockwise when horizontal, to avoid problems with pressing
+	-- the same rotation button two frames in a row. The exception is blinking.
+	-- Since we need to prevent rotating before a blink and blinking before a
+	-- rotate, we need to track both kinds of rotation.
+	, mliForbiddenClockwise :: !Bool
 	, mliForbiddenCounterclockwise :: !Bool
 	, mliOrientable :: !Bool
 	} deriving (Eq, Ord, Read, Show)
@@ -426,8 +425,9 @@ midInitialize mb sensitive gravity = do
 	    	, mliX = x
 	    	, mliExpX = bit x
 	    	, mliOrientation = startingOrientation
-	    	, mliFramesToForcedDrop = gravity-1
+	    	, mliFramesToForcedDrop = gravity
 	    	, mliForbiddenDirection = Nothing
+	    	, mliForbiddenClockwise = False
 	    	, mliForbiddenCounterclockwise = False
 	    	, mliOrientable = False
 	    	}
@@ -457,6 +457,7 @@ pcompare :: MidLeafInfo a -> MidLeafInfo a -> POrdering
 pcompare mli mli' = mempty
 	<> p (on compare mliPathLength mli mli')
 	<> on go mliForbiddenDirection mli mli'
+	<> p (on compare mliForbiddenClockwise mli mli')
 	<> p (on compare mliForbiddenCounterclockwise mli mli')
 	<> p (on compare mliOrientable mli' mli) -- order flipped!
 	-- TODO: 0 or 1 frames to forced drop could occasionally be better than
@@ -492,6 +493,7 @@ mliAdvanceRow mbi mli
 		, mliPathLength = mliPathLength mli + 1
 		, mliFramesToForcedDrop = mbiGravity mbi
 		, mliForbiddenDirection = Nothing
+		, mliForbiddenClockwise = False
 		, mliForbiddenCounterclockwise = False
 		, mliOrientable = mliOrientable mli || mliOrientation mli == Vertical
 		}
@@ -500,8 +502,9 @@ mliAdvanceRow mbi mli
 			then mliPath mli
 			else MidStep Nothing Nothing : mliPath mli
 		, mliPathLength = mliPathLength mli + if sensitiveNow then 1 else 2
-		, mliFramesToForcedDrop = mbiGravity mbi - 1
+		, mliFramesToForcedDrop = mbiGravity mbi
 		, mliForbiddenDirection = Nothing
+		, mliForbiddenClockwise = False
 		, mliForbiddenCounterclockwise = False
 		, mliOrientable = mliOrientable mli || mliOrientation mli == Vertical
 		} where sensitiveNow = mliPathLength mli .&. 1 /= fromEnum (mbiSensitive mbi)
@@ -629,18 +632,21 @@ tryStep mbi mri mli0 step = extendPath <$> case step of
 		mli' <- (tryDir L >=> tryRot Clockwise >=> tryRot Counterclockwise >=> tryDir L) mli0
 		pure mli'
 			{ mliForbiddenDirection = Just L
-			, mliForbiddenCounterclockwise = True
+			, mliForbiddenClockwise = True
+			, mliForbiddenCounterclockwise = True -- never read
 			}
 	MidStep (Just L) (Just rot) | mliOrientation mli0 == Vertical -> do
 		mli' <- (tryDir L >=> tryRot rot >=> tryDir L) mli0
 		pure mli'
 			{ mliForbiddenDirection = Just L
-			, mliForbiddenCounterclockwise = rot == Counterclockwise
+			, mliForbiddenClockwise = rot == Clockwise -- always true
+			, mliForbiddenCounterclockwise = rot == Counterclockwise -- always false
 			}
 	MidStep mdir mrot -> do
 		mli' <- (maybe pure tryDir mdir >=> maybe pure tryRot mrot) mli0
 		pure mli'
 			{ mliForbiddenDirection = mdir
+			, mliForbiddenClockwise = mrot == Just Clockwise -- never read
 			, mliForbiddenCounterclockwise = mrot == Just Counterclockwise
 			-- TODO: this assumes the original pill that we started the
 			-- pathfinding from was horizontal
@@ -663,8 +669,9 @@ tryStep mbi mri mli0 step = extendPath <$> case step of
 			}
 
 	tryRot rot mli = do
-		when (rot == Counterclockwise) $
-			guard (not (mliForbiddenCounterclockwise mli))
+		guard . not $ case rot of
+			Clockwise -> mliForbiddenClockwise mli
+			Counterclockwise -> mliForbiddenCounterclockwise mli
 		case mliOrientation mli of
 			Horizontal -> do
 				guard (mriOccupiedAbove mri .&. mliExpX mli == 0)
@@ -705,7 +712,7 @@ rightMotions :: MidLeafInfo a -> [MidStep]
 rightMotions mli = case (mliOrientable mli, mliOrientation mli) of
 	(False, Horizontal) -> [rightClock, rightOnly, clock, pass]
 	(_, ation) -> [rightOnly, MidStep (Just R) rot, pass, MidStep Nothing rot]
-	where rot = Just $ case mliOrientation mli of Horizontal -> Clockwise; _ -> Counterclockwise
+		where rot = Just $ case ation of Horizontal -> Clockwise; _ -> Counterclockwise
 
 [pass, clock, counter, leftOnly, leftClock, leftCounter, rightOnly, rightClock, rightCounter] = liftA2 MidStep
 	[Nothing, Just L, Just R]
