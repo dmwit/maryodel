@@ -956,12 +956,12 @@ handleStateCallbacks igs@(IInProgress cbControl cbQueue cbState stateIDs youMode
 		(Nothing, _) -> return s
 		(Just cbs, s') -> do
 			frozen <- traverse freezePlayerState livePlayers
-			traverse_ ($Accept frozen) cbs
+			traverse_ ($ Accept frozen) cbs
 			return s'
 handleStateCallbacks igs = return igs
 
 discardAll :: UnitCallbackMap -> UnitCallbackMap -> StateCallbackMap -> IO ()
 discardAll cbControl cbQueue cbState = do
-	traverse_ ($Discarded) cbControl
-	traverse_ ($Discarded) cbQueue
-	traverse_ (traverse_ ($Discarded)) cbState
+	traverse_ ($ Discarded) cbControl
+	traverse_ ($ Discarded) cbQueue
+	traverse_ (traverse_ ($ Discarded)) cbState
