@@ -227,6 +227,7 @@ data MidBoardInfo = MidBoardInfo
 data MidRowInfo a = MidRowInfo
 	{ mriOccupiedHere :: !a
 	, mriOccupiedAbove :: !a
+	, mriOccupiedBelow :: !a
 	, mriY :: {-# UNPACK #-} !Int
 	} deriving (Eq, Ord, Read, Show)
 
@@ -406,6 +407,7 @@ midSearch mss = do
 midInitialize :: (Bits a, Num a) => MBoard s -> Bool -> Int -> ST s (MidSearchState s a)
 midInitialize mb sensitive gravity = do
 	occupiedHere <- getOccupation mb y
+	occupiedBelow <- getOccupation mb (y-1)
 	cache <- newSTArray ((0, minBound), (xMax, maxBound)) []
 	let mss = MidSearchState
 	    	{ mssBoardEnv = MidBoardInfo
@@ -416,6 +418,7 @@ midInitialize mb sensitive gravity = do
 	    	, mssRowEnv = MidRowInfo
 	    		{ mriOccupiedHere = occupiedHere
 	    		, mriOccupiedAbove = 0
+	    		, mriOccupiedBelow = occupiedBelow
 	    		, mriY = y
 	    		}
 	    	, mssCache = cache
@@ -530,11 +533,12 @@ mssAdvanceRow :: (Bits a, Num a) => MidSearchState s a -> ST s (MidSearchState s
 mssAdvanceRow mss = do
 	cache <- newSTArray ((0, minBound), (xMax, maxBound)) []
 	frontier <- fcAdvanceRow (mssBoardEnv mss) (mssCache mss)
-	occupiedHere <- getOccupation (mssBoard mss) y
+	occupiedBelow <- getOccupation (mssBoard mss) (y-1)
 	let mss' = mss
 	    	{ mssRowEnv = MidRowInfo
-	    		{ mriOccupiedHere = occupiedHere
+	    		{ mriOccupiedHere = mriOccupiedBelow (mssRowEnv mss)
 	    		, mriOccupiedAbove = mriOccupiedHere (mssRowEnv mss)
+	    		, mriOccupiedBelow = occupiedBelow
 	    		, mriY = y
 	    		}
 	    	, mssCache = cache
@@ -562,14 +566,13 @@ finalizePaths y = concatMap go where
 		(_, _) -> mh:reorient ation mt
 
 mliUnoccupied :: (Bits a, Num a) => MidRowInfo a -> MidLeafInfo a -> Bool
-mliUnoccupied mri mli = mriY mri >= 0
-	&& mliExpX mli .&. occupiedMask == 0
-	where
+mliUnoccupied mri mli = mliExpX mli .&. occupiedMask == 0 where
 	occupiedMask = mriOccupiedHere mri .|. case mliOrientation mli of
 		Vertical -> mriOccupiedAbove mri
 		Horizontal -> shiftR (mriOccupiedHere mri) 1
 
 getOccupation :: (Bits a, Num a) => MBoard s -> Int -> ST s a
+getOccupation mb (-1) = pure (complement 0)
 getOccupation mb y = go (mwidth mb-1) 0 where
 	go (-1) occ = pure occ
 	go x occ = do
@@ -635,56 +638,63 @@ mfcInsertThen mli mfc k = do
 	where placement = (mliX mli, mliOrientation mli)
 
 tryStep :: (Bits a, Num a) => MidBoardInfo -> MidRowInfo a -> MidLeafInfo a -> MidStep -> Maybe (MidLeafInfo a)
-tryStep mbi mri mli0 step = extendPath <$> case step of
-	Blink -> do
-		mli' <- (tryDir L >=> tryRot Clockwise >=> tryRot Counterclockwise >=> tryDir L) mli0
-		pure mli'
-			{ mliForbiddenDirection = Just L
-			, mliForbiddenClockwise = True
-			, mliForbiddenCounterclockwise = True -- never read
-			}
-	MidStep (Just L) (Just rot) | mliOrientation mli0 == Vertical -> do
-		mli' <- (tryDir L >=> tryRot rot >=> tryDir L) mli0
-		pure mli'
-			{ mliForbiddenDirection = Just L
-			, mliForbiddenClockwise = rot == Clockwise -- always true
-			, mliForbiddenCounterclockwise = rot == Counterclockwise -- always false
-			}
-	MidStep mdir mrot -> do
-		mli' <- (maybe pure tryDir mdir >=> maybe pure tryRot mrot) mli0
-		pure mli'
-			{ mliForbiddenDirection = mdir
-			, mliForbiddenClockwise = mrot == Just Clockwise -- never read
-			, mliForbiddenCounterclockwise = mrot == Just Counterclockwise
-			-- TODO: this assumes the original pill that we started the
-			-- pathfinding from was horizontal
-			, mliOrientable = mliOrientable mli0 || (mliOrientation mli0 == Vertical && mrot == Nothing)
-			}
-	-- TODO: currently we never pass Down, but we should probably support it in
-	-- case that changes
-	Down -> Nothing
+tryStep mbi mri mli0 step = extendPath <$> do
+	let mustDrop = mliFramesToForcedDrop mli0 == 1
+	    here = (if mustDrop then mriOccupiedBelow else mriOccupiedHere) mri
+	    above = (if mustDrop then mriOccupiedHere else mriOccupiedAbove) mri
+	    tryDir = tryDir_ here above
+	    tryRot = tryRot_ here above
+	when mustDrop (tryDown here above mli0)
+	case step of
+		Blink -> do
+			mli' <- (tryDir L >=> tryRot Clockwise >=> tryRot Counterclockwise >=> tryDir L) mli0
+			pure mli'
+				{ mliForbiddenDirection = Just L
+				, mliForbiddenClockwise = True
+				, mliForbiddenCounterclockwise = True -- never read
+				}
+		MidStep (Just L) (Just rot) | mliOrientation mli0 == Vertical -> do
+			mli' <- (tryDir L >=> tryRot rot >=> tryDir L) mli0
+			pure mli'
+				{ mliForbiddenDirection = Just L
+				, mliForbiddenClockwise = rot == Clockwise -- always true
+				, mliForbiddenCounterclockwise = rot == Counterclockwise -- always false
+				}
+		MidStep mdir mrot -> do
+			mli' <- (maybe pure tryDir mdir >=> maybe pure tryRot mrot) mli0
+			pure mli'
+				{ mliForbiddenDirection = mdir
+				, mliForbiddenClockwise = mrot == Just Clockwise -- never read
+				, mliForbiddenCounterclockwise = mrot == Just Counterclockwise
+				-- TODO: this assumes the original pill that we started the
+				-- pathfinding from was horizontal
+				, mliOrientable = mliOrientable mli0 || (mliOrientation mli0 == Vertical && mrot == Nothing)
+				}
+		-- TODO: currently we never pass Down, but we should probably support it in
+		-- case that changes
+		Down -> Nothing
 	where
-	tryDir dir mli = do
+	tryDir_ here above dir mli = do
 		guard (mliForbiddenDirection mli /= Just dir)
 		guard $ case (mliOrientation mli, dir) of
-			(Horizontal, L) -> mriOccupiedHere mri .&. shiftR (mliExpX mli) 1 == 0 && mliX mli-1 >= 0
-			(Horizontal, R) -> mriOccupiedHere mri .&. shiftL (mliExpX mli) 2 == 0 && mliX mli+2 < mbiWidth mbi
-			(Vertical  , L) -> (mriOccupiedHere mri .|. mriOccupiedAbove mri) .&. shiftR (mliExpX mli) 1 == 0 && mliX mli-1 >= 0
-			(Vertical  , R) -> (mriOccupiedHere mri .|. mriOccupiedAbove mri) .&. shiftL (mliExpX mli) 1 == 0 && mliX mli+1 < mbiWidth mbi
+			(Horizontal, L) -> here .&. shiftR (mliExpX mli) 1 == 0 && mliX mli-1 >= 0
+			(Horizontal, R) -> here .&. shiftL (mliExpX mli) 2 == 0 && mliX mli+2 < mbiWidth mbi
+			(Vertical  , L) -> (here .|. above) .&. shiftR (mliExpX mli) 1 == 0 && mliX mli-1 >= 0
+			(Vertical  , R) -> (here .|. above) .&. shiftL (mliExpX mli) 1 == 0 && mliX mli+1 < mbiWidth mbi
 		pure mli
 			{ mliExpX = (case dir of L -> shiftR; R -> shiftL) (mliExpX mli) 1
 			, mliX = (case dir of L -> pred; R -> succ) (mliX mli)
 			}
 
-	tryRot rot mli = do
+	tryRot_ here above rot mli = do
 		guard . not $ case rot of
 			Clockwise -> mliForbiddenClockwise mli
 			Counterclockwise -> mliForbiddenCounterclockwise mli
 		case mliOrientation mli of
 			Horizontal -> do
-				guard (mriOccupiedAbove mri .&. mliExpX mli == 0)
+				guard (above .&. mliExpX mli == 0)
 				pure mli { mliOrientation = Vertical }
-			Vertical -> case (mriOccupiedHere mri .&. shiftR (mliExpX mli) 1, mriOccupiedHere mri .&. shiftL (mliExpX mli) 1) of
+			Vertical -> case (here .&. shiftR (mliExpX mli) 1, here .&. shiftL (mliExpX mli) 1) of
 				(_, 0) | mliX mli+1 < mbiWidth mbi -> pure mli { mliOrientation = Horizontal }
 				(0, _) | mliX mli-1 >= 0 -> pure mli
 					{ mliExpX = shiftR (mliExpX mli) 1
@@ -692,6 +702,11 @@ tryStep mbi mri mli0 step = extendPath <$> case step of
 					, mliOrientation = Horizontal
 					}
 				_ -> Nothing
+
+	tryDown here above mli = guard $ here .&. (mliExpX mli .|. maybeRight) == 0 where
+		maybeRight = case mliOrientation mli of
+			Horizontal -> shiftL (mliExpX mli) 1
+			Vertical -> 0
 
 	extendPath mli = mli
 		{ mliPath = step : mliPath mli
@@ -835,7 +850,8 @@ rotationChecks = [(Clockwise, mliForbiddenClockwise), (Counterclockwise, mliForb
 ppMidRowInfo :: (Bits a, Num a, Show a) => Int -> MidRowInfo a -> String
 ppMidRowInfo w mri = ""
 	++ show (mriY mri + 1) ++ ": " ++ ppBackwardsBits w (mriOccupiedAbove mri) ++ "; "
-	++ show (mriY mri    ) ++ ": " ++ ppBackwardsBits w (mriOccupiedHere  mri)
+	++ show (mriY mri    ) ++ ": " ++ ppBackwardsBits w (mriOccupiedHere  mri) ++ "; "
+	++ show (mriY mri - 1) ++ ": " ++ ppBackwardsBits w (mriOccupiedBelow mri)
 
 ppMidBoardInfo :: MidBoardInfo -> String
 ppMidBoardInfo mbi = ""
