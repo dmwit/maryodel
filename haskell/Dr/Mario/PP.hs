@@ -1,7 +1,9 @@
 module Dr.Mario.PP where
 
 import Data.Aeson
+import Data.Foldable
 import Data.List
+import Data.Sequence (Seq)
 
 import qualified Data.ByteString.Lazy.Char8 as LBS8
 import qualified Data.Text as T
@@ -14,11 +16,16 @@ class PP a where pp :: a -> String
 class PP1 f where liftPP1 :: (a -> String) -> f a -> String
 class PP2 f where liftPP2 :: (a -> String) -> (b -> String) -> f a b -> String
 
+instance PP Int where pp = show
 instance PP Bool where
 	pp True = "✓"
 	pp False = "✗"
 
-instance PP1 [] where liftPP1 ppElem as = "[" ++ intercalate "," (map ppElem as) ++ "]"
+instance PP1 [] where liftPP1 ppElem as = "[" ++ intercalate ", " (map ppElem as) ++ "]"
+instance PP1 Seq where liftPP1 ppElem = liftPP1 ppElem . toList
+instance (PP a, PP b) => PP (a, b) where pp = pp2
+instance PP a => PP1 ((,) a) where liftPP1 = liftPP2 pp
+instance PP2 (,) where liftPP2 ppA ppB (a, b) = "(" ++ ppA a ++ ", " ++ ppB b ++ ")"
 
 ppIO :: PP a => a -> IO ()
 ppIO = putStrLn . pp

@@ -103,14 +103,14 @@ instance ToJSON Position where toJSON pos = toJSON (x pos, y pos)
 instance FromJSON Position where parseJSON v = uncurry Position <$> parseJSON v
 instance ToJSONKey Position
 instance FromJSONKey Position
-instance PP Position where pp pos = "(" ++ show (x pos) ++ ", " ++ padl 2 (show (y pos)) ++ ")"
+instance PP Position where pp pos = pp (x pos, y pos)
 
 instance Hashable Direction where
 	hashWithSalt s Direction { dx = x, dy = y } = s
 		`hashWithSalt` x
 		`hashWithSalt` y
 
-instance PP Direction where pp dir = "+(" ++ show (dx dir) ++ ", " ++ show (dy dir) ++ ")"
+instance PP Direction where pp dir = "+" ++ pp (dx dir, dy dir)
 
 instance Hashable Lookahead where
 	hashWithSalt s lk = s
@@ -141,19 +141,12 @@ instance Hashable PillContent where
 		`hashWithSalt` bottomLeftColor pc
 		`hashWithSalt` otherColor pc
 
-ppPillContent :: PillContent -> String
-ppPillContent pc =
-	[ toChar (orientation pc)
-	, toChar (bottomLeftColor pc)
-	, toChar (otherColor pc)
-	]
-
 -- No toJSONList/toJSONKeyList implementation. Although smashing together the
 -- strings for each PillContent would result in something that was
 -- unambiguously parseable back into a list of PillContents, I just like the
 -- list-y syntax better than the mashed-string-y syntax for this type.
-instance ToJSON    PillContent where toJSON = toJSON . ppPillContent
-instance ToJSONKey PillContent where toJSONKey = contramap ppPillContent toJSONKey
+instance ToJSON    PillContent where toJSON = toJSON . pp
+instance ToJSONKey PillContent where toJSONKey = contramap pp toJSONKey
 
 parsePillContent :: String -> Parser PillContent
 parsePillContent s = case s of
@@ -168,7 +161,7 @@ parsePillContent s = case s of
 
 instance FromJSON    PillContent where parseJSON = parseJSON >=> parsePillContent
 instance FromJSONKey PillContent where fromJSONKey = FromJSONKeyTextParser (parsePillContent . T.unpack)
-instance PP PillContent where pp pc = pp (orientation pc) ++ pp (bottomLeftColor pc) ++ pp (otherColor pc)
+instance PP PillContent where pp pc = [toChar (orientation pc), toChar (bottomLeftColor pc), toChar (otherColor pc)]
 
 instance Hashable Pill where
 	hashWithSalt s pill = s
