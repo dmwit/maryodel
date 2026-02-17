@@ -36,6 +36,7 @@ import Data.Word
 import GHC.Arr
 import Dr.Mario.Model
 import Dr.Mario.Model.Internal
+import Dr.Mario.PP
 import qualified Data.HashMap.Strict as HM
 
 -- | A simplified concept of what paths pills can take, named after the shape
@@ -296,6 +297,50 @@ instance SingleChar HDirection where
 		, "→>rR" ~> R
 		]
 
+instance PP BoxMove where pp = ppAeson
+instance PP HDirection where pp = ppSingleChar
+instance PP MidPath where pp = ppMidSteps . mpSteps
+
+instance PP MidStep where
+	pp = \case
+		Blink -> "(←↻↺)"
+		Down -> "↓"
+		MidStep dir rot -> case foldMap ppSingleChar dir <> foldMap ppSingleChar rot of
+			[] -> "-"
+			[c] -> [c]
+			ans -> "(" ++ ans ++ ")"
+
+instance PP MidPlacement where
+	pp mp = "(" ++ show (x (mpBottomLeft mp)) ++ ", " ++ padl 2 (show (y (mpBottomLeft mp))) ++ ") " ++ ppClockwiseRotations (mpRotations mp)
+
+instance PP MidBoardInfo where
+	pp mbi = ""
+		++ "←" ++ show (mbiWidth mbi) ++ "→ "
+		++ "↓₀" ++ pp (mbiSensitive mbi) ++ " "
+		++ padl 2 (show (mbiGravity mbi)) ++ "/↓"
+
+instance PP (MidLeafInfo a) where
+	pp mli = ""
+		++ ppBackwardsMidSteps (mliPath mli) ++ " "
+		++ show (mliFramesToForcedDrop mli) ++ "↓ "
+		++ [eraseIf (dir `elem` mliForbiddenDirection mli) (toChar dir) | dir <- [L, R]]
+		++ [eraseIf (f mli) (toChar rot) | (rot, f) <- rotationChecks]
+		++ pp (mliOrientable mli)
+		where
+		eraseIf b c = if b then ' ' else c
+
+instance PP POrdering where
+	pp po = case po of
+		PLT -> "<"
+		PEQ -> "="
+		PGT -> ">"
+		PIN -> "∥"
+
+instance (Bits a, Num a, Show a) => PP (MidSearchState s a) where
+	pp mss = ""
+		++ pp (mssBoardEnv mss) ++ "\n"
+		++ ppMidRowInfo (mbiWidth (mssBoardEnv mss)) (mssRowEnv mss) ++ "\n"
+
 parseMidStep :: String -> Maybe (MidStep, String)
 parseMidStep = \case
 	'(':'←':'↻':'↺':')':s -> Just (Blink, s)
@@ -327,18 +372,18 @@ midStepsFromSource src = srcString src >>= go where
 		Nothing -> mismatch "[MidStep]" src
 
 instance ToJSON MidStep where
-	toJSON = toJSON . ppMidStep
-	toJSONList = toJSON . concatMap ppMidStep
-	toEncoding = toEncoding . ppMidStep
-	toEncodingList = toEncoding . concatMap ppMidStep
+	toJSON = toJSON . pp
+	toJSONList = toJSON . concatMap pp
+	toEncoding = toEncoding . pp
+	toEncodingList = toEncoding . concatMap pp
 
 instance FromJSON MidStep where
 	parseJSON = midStepFromSource
 	parseJSONList = midStepsFromSource
 
 instance ToJSONKey MidStep where
-	toJSONKey = contramap ppMidStep toJSONKey
-	toJSONKeyList = contramap (concatMap ppMidStep) toJSONKey
+	toJSONKey = contramap pp toJSONKey
+	toJSONKeyList = contramap (concatMap pp) toJSONKey
 
 instance FromJSONKey MidStep where
 	fromJSONKey = FromJSONKeyTextParser midStepFromSource
@@ -785,36 +830,11 @@ liftJ2 f ma mb = do
 	f a b
 
 -- debugging only
-ppSingleChar :: SingleChar a => a -> String
-ppSingleChar = pure . toChar
-
-ppBool :: Bool -> String
-ppBool = \case True -> "✓"; False -> "✗"
-
-ppMidStep :: MidStep -> String
-ppMidStep = \case
-	Blink -> "(←↻↺)"
-	Down -> "↓"
-	MidStep dir rot -> case foldMap ppSingleChar dir <> foldMap ppSingleChar rot of
-		[] -> "-"
-		[c] -> [c]
-		ans -> "(" ++ ans ++ ")"
-
 ppBackwardsMidSteps :: [MidStep] -> String
 ppBackwardsMidSteps = ppMidSteps . reverse
 
 ppMidSteps :: [MidStep] -> String
-ppMidSteps mss = ['ε' | null mss] ++ foldMap ppMidStep mss
-
-ppPOrdering :: POrdering -> String
-ppPOrdering = \case
-	PLT -> "<"
-	PEQ -> "="
-	PGT -> ">"
-	PIN -> "∥"
-
-ppList :: (a -> String) -> [a] -> String
-ppList ppElem as = "[" ++ intercalate "," (map ppElem as) ++ "]"
+ppMidSteps mss = ['ε' | null mss] ++ foldMap pp mss
 
 ppBackwardsBits :: (Bits a, Num a, Show a) => Int -> a -> String
 ppBackwardsBits 0 _ = ""
@@ -822,16 +842,6 @@ ppBackwardsBits w a = show (a .&. 1) ++ ppBackwardsBits (w-1) (shiftR a 1)
 
 ppBits :: (Bits a, Num a, Show a) => Int -> a -> String
 ppBits w = reverse . ppBackwardsBits w
-
-ppBriefMidLeafInfo :: MidLeafInfo a -> String
-ppBriefMidLeafInfo mli = ""
-	++ ppBackwardsMidSteps (mliPath mli) ++ " "
-	++ show (mliFramesToForcedDrop mli) ++ "↓ "
-	++ [eraseIf (dir `elem` mliForbiddenDirection mli) (toChar dir) | dir <- [L, R]]
-	++ [eraseIf (f mli) (toChar rot) | (rot, f) <- rotationChecks]
-	++ ppBool (mliOrientable mli)
-	where
-	eraseIf b c = if b then ' ' else c
 
 ppMidLeafInfo :: (Bits a, Num a, Show a) => Int -> MidLeafInfo a -> String
 ppMidLeafInfo w mli = ""
@@ -841,7 +851,7 @@ ppMidLeafInfo w mli = ""
 		++ show (mliFramesToForcedDrop mli) ++ "↓, "
 		++ [toChar dir | dir <- [L, R] \\ toList (mliForbiddenDirection mli)]
 		++ [toChar rot | (rot, f) <- rotationChecks, not (f mli)] ++ ", "
-		++ ppBool (mliOrientable mli)
+		++ pp (mliOrientable mli)
 	++ ")"
 
 rotationChecks :: [(Rotation, MidLeafInfo a -> Bool)]
@@ -853,40 +863,17 @@ ppMidRowInfo w mri = ""
 	++ show (mriY mri    ) ++ ": " ++ ppBackwardsBits w (mriOccupiedHere  mri) ++ "; "
 	++ show (mriY mri - 1) ++ ": " ++ ppBackwardsBits w (mriOccupiedBelow mri)
 
-ppMidBoardInfo :: MidBoardInfo -> String
-ppMidBoardInfo mbi = ""
-	++ "←" ++ show (mbiWidth mbi) ++ "→ "
-	++ "↓₀" ++ ppBool (mbiSensitive mbi) ++ " "
-	++ pad 2 (show (mbiGravity mbi)) ++ "/↓"
-
-pad :: Int -> String -> String
-pad n s = replicate (n-length s) ' ' ++ s
-
-ppMidSearchState :: (Bits a, Num a, Show a) => MidSearchState s a -> String
-ppMidSearchState mss = ""
-	++ ppMidBoardInfo (mssBoardEnv mss) ++ "\n"
-	++ ppMidRowInfo (mbiWidth (mssBoardEnv mss)) (mssRowEnv mss) ++ "\n"
-
 ppMidSearchStateST :: (Bits a, Num a, Show a) => MidSearchState s a -> ST s String
 ppMidSearchStateST mss = do
 	b <- mfreeze (mssBoard mss)
-	fcLines <- ifoldMapSTArray (\(x, o) mlis -> [[toChar o, '@'] ++ show x ++ ": " ++ ppList ppBriefMidLeafInfo mlis]) (mssCache mss)
-	pure $ ""
-		++ pp b
-		++ ppMidSearchState mss
-		++ unlines fcLines
-
-ppMidPlacement :: MidPlacement -> String
-ppMidPlacement mp = "(" ++ show (x (mpBottomLeft mp)) ++ ", " ++ pad 2 (show (y (mpBottomLeft mp))) ++ ") " ++ replicate (mpRotations mp) '↻' ++ replicate (3-mpRotations mp) ' '
-
-ppMidPath :: MidPath -> String
-ppMidPath = ppMidSteps . mpSteps
+	fcLines <- ifoldMapSTArray (\(x, o) mlis -> [[toChar o, '@'] ++ show x ++ ": " ++ pp1 mlis]) (mssCache mss)
+	pure $ pp b ++ pp mss ++ unlines fcLines
 
 ppMidResult :: (MidPlacement, MidPath) -> String
-ppMidResult (placement, path) = ppMidPlacement placement ++ ": " ++ ppMidPath path
+ppMidResult (placement, path) = pp placement ++ ": " ++ pp path
 
 ppMidResults :: HashMap MidPlacement MidPath -> String
-ppMidResults = ppList ppMidResult . sort . HM.toList
+ppMidResults = liftPP1 ppMidResult . sort . HM.toList
 
 ppMidResultsLn :: HashMap MidPlacement MidPath -> String
 ppMidResultsLn = unlines . map ppMidResult . sort . HM.toList

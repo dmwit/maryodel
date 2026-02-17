@@ -21,6 +21,7 @@ module Dr.Mario.Model.Internal
 	, SingleCharJSON(..), SingleChar(..)
 	, (~>), parseSingleCharOr
 	, ParserSource(..)
+	, ppSingleChar
 	) where
 
 import Control.Monad
@@ -38,6 +39,7 @@ import Data.Map (Map)
 import Data.Primitive.ByteArray (setByteArray)
 import Data.Typeable
 import Data.Word
+import Dr.Mario.PP
 import GHC.Stack
 import qualified Data.Aeson.Encoding              as E
 import qualified Data.ByteString.Builder          as B
@@ -49,6 +51,7 @@ import qualified Data.Vector.Generic.Mutable.Base as DVGMB
 import qualified Data.Vector.Primitive.Mutable    as DVPM
 import qualified Data.Vector.Unboxed              as U
 import qualified Data.Vector.Unboxed.Mutable      as MV
+import qualified System.Console.ANSI              as ANSI
 
 data Color = Blue | Red | Yellow
 	deriving (Bounded, Enum, Eq, Ord, Read, Show)
@@ -183,6 +186,27 @@ instance SingleChar Shape where
 		, "⊃>"  ~> East
 		, "⊂<"  ~> West
 		]
+
+ppSingleChar :: SingleChar a => a -> String
+ppSingleChar = pure . toChar
+
+instance PP Orientation where pp = ppSingleChar
+instance PP Rotation where pp = ppSingleChar
+instance PP Color where pp = ppSingleChar
+instance PP Shape where
+	pp Virus = "☻"
+	pp other = ppSingleChar other
+
+instance PP Cell where
+	pp Empty = " "
+	pp (Occupied color shape) = concat $
+		[ ANSI.setSGRCode [ANSI.SetColor ANSI.Foreground ANSI.Dull (ansiColor color)]
+		, pp shape
+		, ANSI.setSGRCode []
+		] where
+		ansiColor Red    = ANSI.Red
+		ansiColor Yellow = ANSI.Yellow
+		ansiColor Blue   = ANSI.Cyan
 
 cellShowS :: Cell -> String -> String
 cellShowS cell s = case cell of

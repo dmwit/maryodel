@@ -16,6 +16,7 @@ library
   exposed-modules:     Dr.Mario.Model,
                        Dr.Mario.Model.Internal,
                        Dr.Mario.Pathfinding,
+                       Dr.Mario.PP,
                        Dr.Mario.Protocol.Client,
                        Dr.Mario.Protocol.Raw,
                        Dr.Mario.Util

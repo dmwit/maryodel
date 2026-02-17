@@ -28,7 +28,7 @@ module Dr.Mario.Model
 	, advanceRNG, retreatRNG, retreatRNG', decodeColor, decodePosition, lookaheadTable
 	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill, launchContent
 	, ntscFrameRate
-	, pp, ppIO, mppIO, mppST
+	, PP(..), ppIO, mppIO, mppST, ppSingleChar
 	, MBoard, IOBoard
 	, thaw, mfreeze, munsafeFreeze
 	, memptyBoard
@@ -68,9 +68,9 @@ import qualified Data.Vector                 as V
 import qualified Data.Vector.Unboxed         as U
 import qualified Data.Vector.Mutable         as MV
 import qualified Data.Vector.Unboxed.Mutable as MU
-import qualified System.Console.ANSI         as ANSI
 
 import Dr.Mario.Model.Internal
+import Dr.Mario.PP
 import Dr.Mario.Util
 
 -- | Uses the math convention: the bottom of a 'Board' is at 'y'=0, the top at some positive 'y'.
@@ -102,23 +102,23 @@ instance ToJSON Position where toJSON pos = toJSON (x pos, y pos)
 instance FromJSON Position where parseJSON v = uncurry Position <$> parseJSON v
 instance ToJSONKey Position
 instance FromJSONKey Position
+instance PP Position where pp pos = "(" ++ show (x pos) ++ ", " ++ padl 2 (show (y pos)) ++ ")"
 
 instance Hashable Direction where
 	hashWithSalt s Direction { dx = x, dy = y } = s
 		`hashWithSalt` x
 		`hashWithSalt` y
 
+instance PP Direction where pp dir = "+(" ++ show (dx dir) ++ ", " ++ show (dy dir) ++ ")"
+
 instance Hashable Lookahead where
 	hashWithSalt s lk = s
 		`hashWithSalt` leftColor lk
 		`hashWithSalt` rightColor lk
 
-ppLookahead :: Lookahead -> String
-ppLookahead lk = toChar <$> [leftColor lk, rightColor lk]
-
 -- No toJSONList/toJSONKeyList implementation; same reason as for PillContent.
-instance ToJSON    Lookahead where toJSON = toJSON . ppLookahead
-instance ToJSONKey Lookahead where toJSONKey = contramap ppLookahead toJSONKey
+instance ToJSON    Lookahead where toJSON = toJSON . pp
+instance ToJSONKey Lookahead where toJSONKey = contramap pp toJSONKey
 
 parseLookahead :: String -> Parser Lookahead
 parseLookahead s = case s of
@@ -132,6 +132,7 @@ parseLookahead s = case s of
 
 instance FromJSON    Lookahead where parseJSON = parseJSON >=> parseLookahead
 instance FromJSONKey Lookahead where fromJSONKey = FromJSONKeyTextParser (parseLookahead . T.unpack)
+instance PP Lookahead where pp lk = toChar <$> [leftColor lk, rightColor lk]
 
 instance Hashable PillContent where
 	hashWithSalt s pc = s
@@ -166,6 +167,7 @@ parsePillContent s = case s of
 
 instance FromJSON    PillContent where parseJSON = parseJSON >=> parsePillContent
 instance FromJSONKey PillContent where fromJSONKey = FromJSONKeyTextParser (parsePillContent . T.unpack)
+instance PP PillContent where pp pc = pp (orientation pc) ++ pp (bottomLeftColor pc) ++ pp (otherColor pc)
 
 instance Hashable Pill where
 	hashWithSalt s pill = s
@@ -176,6 +178,7 @@ instance ToJSON Pill where toJSON pill = toJSON (content pill, bottomLeftPositio
 instance FromJSON Pill where parseJSON v = uncurry Pill <$> parseJSON v
 instance ToJSONKey Pill
 instance FromJSONKey Pill
+instance PP Pill where pp p = pp (content p) ++ "@" ++ pp (bottomLeftPosition p)
 
 instance ToJSON CoarseSpeed
 instance FromJSON CoarseSpeed
@@ -335,34 +338,14 @@ unsafeGet b p = cells b `V.unsafeIndex` x p `U.unsafeIndex` y p
 ntscFrameRate :: Fractional a => a
 ntscFrameRate = 60.0988
 
--- | For debugging purposes only. Not particularly efficient.
-pp :: Board -> String
-pp b = unlines
-	[ concat
-		[ ppCell (unsafeGet b Position { x = x, y = y })
-		| x <- [0 .. width b-1]
-		]
-	| y <- [height b-1, height b-2 .. 0]
-	] ++ ANSI.setSGRCode []
-	where
-	ppCell Empty = " "
-	ppCell (Occupied color shape) = ANSI.setSGRCode [ANSI.SetColor ANSI.Foreground ANSI.Dull (ppColor color)] ++ ppShape shape
-
-	ppColor Red    = ANSI.Red
-	ppColor Yellow = ANSI.Yellow
-	ppColor Blue   = ANSI.Cyan
-
-	ppShape Virus        = "☻"
-	ppShape Disconnected = "o"
-	ppShape North        = "^"
-	ppShape South        = "v"
-	ppShape East         = ">"
-	ppShape West         = "<"
-
--- the flush is needed because the color reset is after the final newline, and
--- the caller might be about to let the user type on stdin with echoing on
-ppIO :: Board -> IO ()
-ppIO b = putStr (pp b) >> hFlush stdout
+instance PP Board where
+	pp b = unlines
+		[ concat
+			[ pp (unsafeGet b Position { x = x, y = y })
+			| x <- [0 .. width b-1]
+			]
+		| y <- [height b-1, height b-2 .. 0]
+		] ++ "\n"
 
 mppIO :: IOBoard -> IO ()
 mppIO = mfreeze >=> ppIO
