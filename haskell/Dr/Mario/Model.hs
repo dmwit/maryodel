@@ -45,22 +45,18 @@ import Control.Monad
 import Control.Monad.Primitive
 import Control.Monad.ST
 import Control.Monad.Trans.Writer.CPS
-import Data.Aeson
 import Data.Aeson.Types
 import Data.Bifunctor
 import Data.Bits hiding (rotate)
 import Data.Foldable (toList, foldMap', for_)
 import Data.Functor.Contravariant
 import Data.Hashable (Hashable, hashWithSalt, hashUsing)
-import Data.Ix
 import Data.Map (Map)
 import Data.Semigroup
-import Data.Monoid
 import Data.Primitive.MutVar
 import Data.Set (Set)
 import Data.Word
 import GHC.Generics
-import System.IO
 import qualified Data.List                   as L
 import qualified Data.Map.Strict             as M
 import qualified Data.Set                    as S

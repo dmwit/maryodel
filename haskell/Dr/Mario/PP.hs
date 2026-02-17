@@ -1,10 +1,10 @@
 module Dr.Mario.PP where
 
-import Numeric
 import Data.Aeson
 import Data.Foldable
 import Data.List
 import Data.Sequence (Seq)
+import Numeric
 import System.IO
 
 import qualified Data.ByteString.Lazy.Char8 as LBS8

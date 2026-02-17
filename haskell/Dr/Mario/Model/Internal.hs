@@ -25,12 +25,10 @@ module Dr.Mario.Model.Internal
 	) where
 
 import Control.Monad
-import Data.Aeson
 import Data.Aeson.Types
 import Data.Bits
 import Data.Coerce
 import Data.Default
-import Data.Foldable
 import Data.Functor.Contravariant
 import Data.Hashable (Hashable, hashWithSalt, hashUsing)
 import Data.List

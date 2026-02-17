@@ -21,7 +21,6 @@ import Control.Monad
 import Control.Monad.Loops
 import Control.Monad.Primitive
 import Control.Monad.ST
-import Data.Aeson
 import Data.Aeson.Types
 import Data.Bits
 import Data.Foldable
