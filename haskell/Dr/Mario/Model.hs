@@ -36,6 +36,7 @@ module Dr.Mario.Model
 	, mget, munsafeGet, mofoldMap, mofoldMapWithKey, mcountViruses
 	, minfect, mplace, mplaceDetails, mgarbage, mclear
 	, mrandomLevel, munsafeRandomLevel, mrandomBoard, munsafeRandomBoard, munsafeRandomViruses, mrandomLookaheads
+	, mset, munsafeSet
 	, mnewRNG, mrandomColor, mrandomPosition
 	) where
 
