@@ -1,9 +1,11 @@
 module Dr.Mario.PP where
 
+import Numeric
 import Data.Aeson
 import Data.Foldable
 import Data.List
 import Data.Sequence (Seq)
+import System.IO
 
 import qualified Data.ByteString.Lazy.Char8 as LBS8
 import qualified Data.Text as T
@@ -28,13 +30,13 @@ instance PP a => PP1 ((,) a) where liftPP1 = liftPP2 pp
 instance PP2 (,) where liftPP2 ppA ppB (a, b) = "(" ++ ppA a ++ ", " ++ ppB b ++ ")"
 
 ppIO :: PP a => a -> IO ()
-ppIO = putStrLn . pp
+ppIO a = putStrLn (pp a) >> hFlush stdout
 
 pp1IO :: (PP1 f, PP a) => f a -> IO ()
-pp1IO = putStrLn . pp1
+pp1IO fa = putStrLn (pp1 fa) >> hFlush stdout
 
 pp2IO :: (PP2 f, PP a, PP b) => f a b -> IO ()
-pp2IO = putStrLn . pp2
+pp2IO fab = putStrLn (pp2 fab) >> hFlush stdout
 
 pp1 :: (PP1 f, PP a) => f a -> String
 pp1 = liftPP1 pp
@@ -57,6 +59,10 @@ elideTo :: Int -> String -> String
 elideTo n s = case drop n s of
 	[] -> s
 	_ -> take (n-3) s ++ "..."
+
+ppPrecision :: Int -> Float -> String
+ppPrecision p n = if isNaN n then "nan" else showFFloat Nothing (fromInteger (round (pow*n))/pow) ""
+	where pow = 10^p
 
 -- | @ppPercent 1 = "100%"@
 ppPercent :: Float -> String
