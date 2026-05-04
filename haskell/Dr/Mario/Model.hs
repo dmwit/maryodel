@@ -48,6 +48,7 @@ import Control.Monad.Trans.Writer.CPS
 import Data.Aeson.Types
 import Data.Bifunctor
 import Data.Bits hiding (rotate)
+import Data.Default
 import Data.Foldable (toList, foldMap', for_)
 import Data.Functor.Contravariant
 import Data.Hashable (Hashable, hashWithSalt, hashUsing)
@@ -99,6 +100,7 @@ instance ToJSON Position where toJSON pos = toJSON (x pos, y pos)
 instance FromJSON Position where parseJSON v = uncurry Position <$> parseJSON v
 instance ToJSONKey Position
 instance FromJSONKey Position
+instance Default Position where def = Position 0 0
 instance PP Position where pp pos = pp (x pos, y pos)
 
 instance Hashable Direction where
