@@ -24,6 +24,7 @@ module Dr.Mario.Model
 	, width, height
 	, get, getColor, unsafeGet, ofoldMap, ofoldMapWithKey, unsafeMap, countViruses
 	, move, rotate, rotateContent, place, placeDetails, garbage, clear
+	, FrameCostModel(..), approxFrameCostModel, interControlFrameCost
 	, randomLevel, randomBoard, unsafeRandomViruses, randomLookaheads
 	, advanceRNG, retreatRNG, retreatRNG', decodeColor, decodePosition, lookaheadTable
 	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill, launchContent
@@ -906,6 +907,40 @@ unsafeClearAndDrop mb ps = do
 	if M.null clearMap
 		then pure NoClear
 		else Clear clearMap <$> unsafeDropAndClear mb ps'
+
+data FrameCostModel = FrameCostModel
+	{ clearAnimation :: Int
+	, fallPerRow :: Int
+	, pillTossAnimation :: Int
+	-- | NES Dr. Mario seems to spend a different amount of time depending on how high you lock the pill. This vector should therefore be 16 elements long.
+	, lockPenalty :: V.Vector Int
+	} deriving (Eq, Ord, Read, Show)
+
+-- | These numbers were filled in by feel rather than by careful examination of
+-- the code or expirementation in an emulator.
+approxFrameCostModel :: CoarseSpeed -> FrameCostModel
+approxFrameCostModel spd = FrameCostModel
+	{ pillTossAnimation = if spd == Low then 32 else 64
+	, fallPerRow = 16
+	, clearAnimation = 8
+	, lockPenalty = V.fromList [32, 31, 29, 28, 27, 25, 24, 23, 22, 21, 19, 18, 17, 17, 17, 17]
+	}
+
+-- | Just the costs of clears and falls.
+cleanupFrameCost :: FrameCostModel -> CleanupResults -> Int
+cleanupFrameCost cm cr = 0
+	+ clearAnimation cm * length (rowsFallen cr)
+	+ fallPerRow cm * sum (rowsFallen cr)
+
+-- | Takes a lock height and the placement results.
+interControlFrameCost :: FrameCostModel -> Int -> Maybe CleanupResults -> Int
+interControlFrameCost cm yLock mcr = 0
+	+ maybe 0 (cleanupFrameCost cm) mcr
+	+ sum ((lockPenalty cm V.!? yLock) <|> lastM (lockPenalty cm))
+	+ pillTossAnimation cm
+	where
+	locks = lockPenalty cm
+	lastM v = v V.!? (V.length v - 1)
 
 -- | An implementation of the random number generator. Given a current RNG
 -- state, produces the next one.
