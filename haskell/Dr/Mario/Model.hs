@@ -920,10 +920,11 @@ data FrameCostModel = FrameCostModel
 -- the code or expirementation in an emulator.
 approxFrameCostModel :: CoarseSpeed -> FrameCostModel
 approxFrameCostModel spd = FrameCostModel
-	{ pillTossAnimation = if spd == Low then 32 else 64
+	{ pillTossAnimation = if spd == Low then 64 else 32
 	, fallPerRow = 16
-	, clearAnimation = 8
-	, lockPenalty = V.fromList [32, 31, 29, 28, 27, 25, 24, 23, 22, 21, 19, 18, 17, 17, 17, 17]
+	, clearAnimation = 20
+	-- based on data from Nurse.Sveta.Tomcats:
+	, lockPenalty = V.fromList [15, 14, 12, 10, 9, 9, 7, 7, 5, 5, 3, 3, 1, 2, 2, 2]
 	}
 
 -- | Just the costs of clears and falls.
