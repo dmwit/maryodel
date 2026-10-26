@@ -12,6 +12,7 @@ module Dr.Mario.Pathfinding (
 	MidPath(..),
 	MidStep(..),
 	HDirection(..),
+	approxReachable,
 	mapproxReachable,
 	shorterPath,
 	) where
@@ -418,6 +419,10 @@ instance FromJSON MidPlacement where
 
 instance ToJSONKey MidPlacement
 instance FromJSONKey MidPlacement
+
+-- | See 'mapproxReachable'.
+approxReachable :: Board -> Bool -> Int -> HashMap MidPlacement MidPath
+approxReachable b sensitive gravity = runST (thaw b >>= \mb -> mapproxReachable mb sensitive gravity)
 
 -- TODO: memoize blank rows for 8x16 boards and some sensible range of gravities
 -- | Find lots of reachable positions. There should be no false positives, i.e.

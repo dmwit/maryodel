@@ -24,7 +24,8 @@ module Dr.Mario.Model
 	, width, height
 	, get, getColor, unsafeGet, ofoldMap, ofoldMapWithKey, unsafeMap, countViruses
 	, move, rotate, rotateContent, place, placeDetails, garbage, clear
-	, FrameCostModel(..), approxFrameCostModel, interControlFrameCost
+	, FrameCostModel(..), approxFrameCostModel
+	, interControlFrameCost, interControlFrameCost', interControlFrameCostM, interControlFrameCostM'
 	, randomLevel, randomBoard, unsafeRandomViruses, randomLookaheads
 	, advanceRNG, retreatRNG, retreatRNG', decodeColor, decodePosition, lookaheadTable
 	, startingBottomLeftPosition, startingOtherPosition, startingOrientation, launchPill, launchContent
@@ -933,15 +934,31 @@ cleanupFrameCost cm cr = 0
 	+ clearAnimation cm * length (rowsFallen cr)
 	+ fallPerRow cm * sum (rowsFallen cr)
 
--- | Takes a lock height and the placement results.
-interControlFrameCost :: FrameCostModel -> Int -> Maybe CleanupResults -> Int
-interControlFrameCost cm yLock mcr = 0
-	+ maybe 0 (cleanupFrameCost cm) mcr
+-- | Takes a lock height and the placement results; returns the number of
+-- frames between the pill locking and the next pill being controllable.
+interControlFrameCost :: FrameCostModel -> Int -> CleanupResults -> Int
+interControlFrameCost cm yLock cr = 0
+	+ cleanupFrameCost cm cr
 	+ sum ((lockPenalty cm V.!? yLock) <|> lastM (lockPenalty cm))
 	+ pillTossAnimation cm
 	where
 	locks = lockPenalty cm
 	lastM v = v V.!? (V.length v - 1)
+
+-- | See 'interControlFrameCost'. May be more convenient because 'place' and
+-- 'mplace' return 'Maybe's.
+interControlFrameCostM :: FrameCostModel -> Int -> Maybe CleanupResults -> Int
+interControlFrameCostM cm yLock mcr = sum (interControlFrameCost cm yLock <$> mcr)
+
+-- | See 'interControlFrameCost', but may be more convenient if you just want
+-- the default cost model and don't care about cost model memoization.
+interControlFrameCost' :: CoarseSpeed -> Pill -> CleanupResults -> Int
+interControlFrameCost' spd = interControlFrameCost (approxFrameCostModel spd) . y . bottomLeftPosition
+
+-- | See 'interControlFrameCost\''. May be more convenient because 'place' and
+-- 'mplace' return 'Maybe's.
+interControlFrameCostM' :: CoarseSpeed -> Pill -> Maybe CleanupResults -> Int
+interControlFrameCostM' spd = let f = interControlFrameCost' spd in \pill -> sum . fmap (f pill)
 
 -- | An implementation of the random number generator. Given a current RNG
 -- state, produces the next one.
