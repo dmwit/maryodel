@@ -144,8 +144,8 @@ instance SingleChar Orientation where
 		Horizontal -> '↔'
 		Vertical -> '↕'
 	fromChar = tail [undefined
-		, "↔-" ~> Horizontal
-		, "↕|" ~> Vertical
+		, "↔-hH" ~> Horizontal
+		, "↕|vV" ~> Vertical
 		]
 
 instance SingleChar Rotation where
